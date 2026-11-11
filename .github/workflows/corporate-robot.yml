@@ -1,4 +1,5 @@
 name: Corporate Robot 24/7
+# Auth memakai GitHub OIDC; tidak membutuhkan repository secret.
 
 on:
   schedule:
