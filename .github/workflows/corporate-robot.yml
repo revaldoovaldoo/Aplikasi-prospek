@@ -1,0 +1,24 @@
+name: Corporate Robot 24/7
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run one Corporate Robot batch
+        env:
+          ROBOT_CRON_SECRET: ${{ secrets.ROBOT_CRON_SECRET }}
+        run: |
+          if [ -z "$ROBOT_CRON_SECRET" ]; then
+            echo "ROBOT_CRON_SECRET belum diisi di GitHub Actions secrets."
+            exit 1
+          fi
+          curl --fail --silent --show-error --max-time 120 \
+            -X POST "https://site-112732548e6d4039b0803f571aea6817.freebuff.page/api/corporate/robot/cron" \
+            -H "Authorization: Bearer $ROBOT_CRON_SECRET" \
+            -H "Content-Type: application/json" \
+            --data '{"source":"github-actions"}'
