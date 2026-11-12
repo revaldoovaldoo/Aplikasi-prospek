@@ -1,0 +1,34 @@
+name: Research Panel Test
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/research-panel-test.yml"
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Research one lead without publishing
+        run: |
+          set -euo pipefail
+          OIDC_RESPONSE=$(curl --silent --show-error --fail \
+            -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=hallo-pane-robot")
+          OIDC_TOKEN=$(printf '%s' "$OIDC_RESPONSE" | jq -r '.value')
+          if [ -z "$OIDC_TOKEN" ] || [ "$OIDC_TOKEN" = "null" ]; then
+            echo "GitHub tidak memberikan OIDC token."
+            exit 1
+          fi
+          curl --fail-with-body --silent --show-error --max-time 180 \
+            -X POST "https://site-112732548e6d4039b0803f571aea6817.freebuff.page/api/corporate/robot/cron-oidc" \
+            -H "Authorization: Bearer $OIDC_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data '{"testLeadId":"osm:node/4235288201"}'
