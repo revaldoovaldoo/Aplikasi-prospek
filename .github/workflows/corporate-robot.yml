@@ -23,6 +23,7 @@ concurrency:
 jobs:
   tick:
     runs-on: ubuntu-latest
+    # Satu lead bisa memakai beberapa detik untuk panel AI dan geocoding.
     timeout-minutes: 3
     steps:
       - name: Run one Corporate Robot batch
