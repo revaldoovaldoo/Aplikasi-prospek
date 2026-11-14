@@ -1,0 +1,30 @@
+{
+  "name": "quotedesk-asnet",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "build:worker": "esbuild worker/index.js --bundle --format=esm --platform=neutral --target=es2022 --outfile=deploy/worker.js",
+    "build:site": "npm run build && npm run build:worker",
+    "dev:worker": "wrangler dev --config wrangler.local.jsonc",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@freebuff/auth": "^0.1.0",
+    "jspdf": "^4.2.1",
+    "pdfjs-dist": "^5.4.149",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "esbuild": "^0.28.2",
+    "typescript": "^5.9.0",
+    "vite": "^7.1.0",
+    "wrangler": "^4.152.0"
+  }
+}

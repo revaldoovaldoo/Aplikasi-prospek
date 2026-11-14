@@ -1,0 +1,1920 @@
+/**
+ * Robot Corporate Engine.
+ *
+ * Tiga tahap yang berjalan berurutan:
+ * 1. Finding   — menilai kebutuhan internet/jaringan dari website dan sumber
+ *                publik, bukan hanya menebak dari kategori.
+ * 2. Klarifikasi — mencari dan memverifikasi kontak IT/PIC dari website,
+ *                LinkedIn/direktori publik, serta memeriksa domain e-mail.
+ * 3. Publish   — menyimpan hasil ke D1, menambahkannya ke Prospek bila
+ *                diaktifkan, lalu mengirim notifikasi Telegram.
+ *
+ * Catatan privasi: robot tidak mengakses CCTV, kamera, akun sosial media
+ * pribadi, atau area yang membutuhkan login. Verifikasi hanya memakai sumber
+ * publik dan data bisnis yang memang dipublikasikan.
+ */
+
+import {
+  ensureCorporateSchema,
+  exaSearch,
+  readPublicText,
+  resolveLeadCoordinates,
+  rowToLead,
+  sanitizePicName,
+} from "./corporate.js";
+import { researchCorporateLead } from "./research.js";
+import { openosintConfigured } from "./openosint.js";
+import { formatPicPhones, validPicPhone } from "./phone.js";
+
+const ROBOT_INTERVAL_MS = 15 * 60 * 1000;
+const ROBOT_LOCK_MS = 10 * 60 * 1000;
+const DEFAULT_TELEGRAM_PHONE = "+6285156590261";
+const MAX_APP_STATE_CHARS = 1_500_000;
+
+/**
+ * Struktur 9 agen: 3 Finding, 4 Klarifikasi (3 Exa + OpenOSINT native), dan
+ * 2 Publish dengan pekerjaan terpisah (Telegram dan Prospek). OpenOSINT
+ * berjalan langsung di Worker melalui DNS-over-HTTPS dan RDAP.
+ */
+const AGENT_BLUEPRINT = {
+  finding: [
+    {
+      id: "finding-profile",
+      name: "Profil Entitas",
+      role: "Membaca website resmi, alamat, dan sinyal operasional.",
+      provider: "Website publik (gratis)",
+    },
+    {
+      id: "finding-signals",
+      name: "Sinyal Publik",
+      role: "Mencari sinyal internet, jaringan, dan ekspansi dari sumber publik.",
+      provider: "Exa Search",
+    },
+    {
+      id: "finding-qualifier",
+      name: "Penilai Kebutuhan",
+      role: "Menggabungkan bukti dan menghitung skor kebutuhan.",
+      provider: "Rule engine (gratis)",
+    },
+  ],
+  clarification: [
+    {
+      id: "clarification-scout",
+      name: "Scout",
+      role: "Website resmi, alamat, dan koordinat.",
+      provider: "Exa Answer",
+    },
+    {
+      id: "clarification-contact",
+      name: "Contact Finder",
+      role: "Nama PIC, jabatan, e-mail, dan nomor telepon.",
+      provider: "Exa Answer",
+    },
+    {
+      id: "clarification-verifier",
+      name: "Verifier",
+      role: "Verifikasi independen, konflik data, dan sitasi.",
+      provider: "Exa Answer",
+    },
+    {
+      id: "clarification-openosint",
+      name: "OpenOSINT",
+      role: "Memeriksa DNS dan registrasi domain secara pasif setelah klarifikasi menerima domain resmi.",
+      provider: "OpenOSINT native (DNS/RDAP)",
+    },
+  ],
+  publish: [
+    {
+      id: "publish-telegram",
+      name: "Kurir Telegram",
+      role: "Mengirim tujuh baris lengkap setelah Klarifikasi menerima lead; tepat satu kali per lead.",
+      provider: "Telegram Bot API (gratis)",
+    },
+    {
+      id: "publish-prospect",
+      name: "Penulis Prospek",
+      role: "Menulis informasi lead yang sudah diklarifikasi ke daftar Prospek.",
+      provider: "D1 / data aplikasi",
+    },
+  ],
+};
+
+function findingStatusLabel(status) {
+  return (
+    {
+      ok: "berhasil",
+      skipped: "dilewati",
+      empty: "tanpa hasil",
+      error: "gagal",
+      disabled: "belum aktif",
+    }[status] || status
+  );
+}
+
+function agentStructure(env = {}, telegramConfigured = false) {
+  const exa = Boolean(clean(env.EXA_API_KEY));
+  return {
+    finding: AGENT_BLUEPRINT.finding.map((agent) => ({
+      ...agent,
+      active: agent.id === "finding-signals" ? exa : true,
+      provider:
+        agent.id === "finding-signals" && !exa
+          ? "Exa (belum aktif)"
+          : agent.provider,
+    })),
+    clarification: AGENT_BLUEPRINT.clarification.map((agent) => {
+      if (agent.id === "clarification-openosint") {
+        return { ...agent, active: true };
+      }
+      return {
+        ...agent,
+        active: exa,
+        provider: exa ? agent.provider : "Exa Answer (belum aktif)",
+      };
+    }),
+    publish: AGENT_BLUEPRINT.publish.map((agent) => ({
+      ...agent,
+      active:
+        agent.id === "publish-telegram"
+          ? Boolean(telegramConfigured)
+          : true,
+      provider:
+        agent.id === "publish-telegram" && !telegramConfigured
+          ? "Telegram (belum aktif)"
+          : agent.provider,
+    })),
+  };
+}
+
+const ROBOT_SCHEMA_SQL = [
+  `CREATE TABLE IF NOT EXISTS corporate_robot_jobs (
+    lead_id TEXT PRIMARY KEY,
+    stage TEXT NOT NULL DEFAULT 'finding',
+    status TEXT NOT NULL DEFAULT 'queued',
+    need_score INTEGER NOT NULL DEFAULT 0,
+    need_label TEXT NOT NULL DEFAULT '',
+    need_evidence TEXT NOT NULL DEFAULT '[]',
+    contact_status TEXT NOT NULL DEFAULT 'pending',
+    contact_confidence INTEGER NOT NULL DEFAULT 0,
+    contact_evidence TEXT NOT NULL DEFAULT '[]',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT NOT NULL DEFAULT '',
+    next_run_at TEXT NOT NULL,
+    published_at TEXT NOT NULL DEFAULT '',
+    telegram_sent_at TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS corporate_telegram_outbox (
+    id TEXT PRIMARY KEY,
+    lead_id TEXT NOT NULL,
+    message_type TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    claimed_at TEXT NOT NULL DEFAULT '',
+    sent_at TEXT NOT NULL DEFAULT '',
+    telegram_message_id TEXT NOT NULL DEFAULT '',
+    last_error TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (lead_id, message_type)
+  )`,
+  `CREATE INDEX IF NOT EXISTS corporate_telegram_outbox_due
+    ON corporate_telegram_outbox (status, created_at)`,
+  `CREATE TABLE IF NOT EXISTS corporate_robot_settings (
+    owner_id TEXT PRIMARY KEY,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    auto_publish INTEGER NOT NULL DEFAULT 1,
+    telegram_chat_id TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS corporate_robot_runs (
+    id TEXT PRIMARY KEY,
+    started_at TEXT NOT NULL,
+    finished_at TEXT NOT NULL,
+    checked INTEGER NOT NULL DEFAULT 0,
+    found INTEGER NOT NULL DEFAULT 0,
+    published INTEGER NOT NULL DEFAULT 0,
+    notified INTEGER NOT NULL DEFAULT 0,
+    error TEXT NOT NULL DEFAULT ''
+  )`,
+  `CREATE INDEX IF NOT EXISTS corporate_robot_jobs_due
+    ON corporate_robot_jobs (stage, next_run_at)`,
+  `CREATE TABLE IF NOT EXISTS app_state (
+    user_id TEXT PRIMARY KEY,
+    payload TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
+];
+
+let robotSchemaPromise;
+
+export async function ensureRobotSchema(db) {
+  if (!robotSchemaPromise) {
+    robotSchemaPromise = (async () => {
+      for (const sql of ROBOT_SCHEMA_SQL) {
+        await db.prepare(sql).run();
+      }
+    })().catch((error) => {
+      robotSchemaPromise = undefined;
+      throw error;
+    });
+  }
+  return robotSchemaPromise;
+}
+
+function clean(value) {
+  return typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
+}
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function addDays(days) {
+  return new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
+}
+
+function addHours(hours) {
+  return new Date(Date.now() + hours * 60 * 60 * 1000).toISOString();
+}
+
+function parseEvidence(value) {
+  try {
+    const parsed = JSON.parse(value || "[]");
+    return Array.isArray(parsed)
+      ? parsed.filter((item) => typeof item === "string" && item.trim()).slice(0, 12)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function rowToJob(row) {
+  return {
+    lead: rowToLead(row),
+    stage: row.stage || "finding",
+    status: row.status || "queued",
+    needScore: Number(row.need_score || 0),
+    needLabel: row.need_label || "",
+    needEvidence: parseEvidence(row.need_evidence),
+    contactStatus: row.contact_status || "pending",
+    contactConfidence: Number(row.contact_confidence || 0),
+    contactEvidence: parseEvidence(row.contact_evidence),
+    attempts: Number(row.attempts || 0),
+    lastError: row.last_error || "",
+    publishedAt: row.published_at || "",
+    telegramSentAt: row.telegram_sent_at || "",
+    updatedAt: row.job_updated_at || row.lead_updated_at || "",
+  };
+}
+
+const JOB_SELECT = `
+  SELECT
+    j.lead_id, j.stage, j.status, j.need_score, j.need_label, j.need_evidence,
+    j.contact_status, j.contact_confidence, j.contact_evidence, j.attempts,
+    j.last_error, j.next_run_at, j.published_at, j.telegram_sent_at,
+    j.updated_at AS job_updated_at,
+    l.id, l.name, l.city, l.area, l.category, l.email, l.phone, l.website,
+    l.updated_at AS lead_updated_at,
+    l.contact_name, l.contact_role, l.contact_url, l.contact_source,
+    l.latitude, l.longitude, l.coordinate_address, l.coordinate_source,
+    l.validation_status, l.validation_evidence, l.validated_at, l.ai_confidence
+  FROM corporate_robot_jobs j
+  JOIN corporate_leads l ON l.id = j.lead_id
+`;
+
+async function readMeta(db, key) {
+  const row = await db
+    .prepare("SELECT value FROM corporate_meta WHERE key = ?")
+    .bind(key)
+    .first();
+  return row?.value || "";
+}
+
+async function writeMeta(db, key, value) {
+  await db
+    .prepare(
+      "INSERT INTO corporate_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    )
+    .bind(key, value)
+    .run();
+}
+
+async function readJob(db, leadId) {
+  const row = await db
+    .prepare(`${JOB_SELECT} WHERE j.lead_id = ?`)
+    .bind(leadId)
+    .first();
+  return row ? rowToJob(row) : null;
+}
+
+async function updateJob(db, leadId, fields) {
+  const entries = Object.entries(fields).filter(([, value]) => value !== undefined);
+  if (entries.length === 0) return;
+  const sets = entries.map(([key]) => `${key} = ?`).join(", ");
+  const values = entries.map(([, value]) =>
+    typeof value === "boolean" ? (value ? 1 : 0) : value,
+  );
+  await db
+    .prepare(
+      `UPDATE corporate_robot_jobs SET ${sets}, updated_at = ? WHERE lead_id = ?`,
+    )
+    .bind(...values, nowIso(), leadId)
+    .run();
+}
+
+async function getSettings(db, ownerId = "") {
+  if (ownerId) {
+    return db
+      .prepare("SELECT * FROM corporate_robot_settings WHERE owner_id = ?")
+      .bind(ownerId)
+      .first();
+  }
+  return db
+    .prepare(
+      "SELECT * FROM corporate_robot_settings WHERE enabled = 1 ORDER BY updated_at DESC LIMIT 1",
+    )
+    .first();
+}
+
+export async function updateRobotSettings(db, ownerId, input = {}) {
+  await ensureRobotSchema(db);
+  const previous = await getSettings(db, ownerId);
+  // Robot ini sengaja tidak punya mode jeda/manual: scheduler harus selalu
+  // aktif, dan setiap hasil yang lolos validasi wajib masuk Prospek.
+  const enabled = true;
+  const autoPublish = true;
+  const telegramChatId =
+    typeof input.telegramChatId === "string"
+      ? clean(input.telegramChatId).replace(/[^0-9@A-Za-z_-]/g, "").slice(0, 64)
+      : previous?.telegram_chat_id || "";
+  const now = nowIso();
+  await db
+    .prepare(
+      `INSERT INTO corporate_robot_settings
+        (owner_id, enabled, auto_publish, telegram_chat_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(owner_id) DO UPDATE SET
+         enabled = excluded.enabled,
+         auto_publish = excluded.auto_publish,
+         telegram_chat_id = excluded.telegram_chat_id,
+         updated_at = excluded.updated_at`,
+    )
+    .bind(ownerId, enabled ? 1 : 0, autoPublish ? 1 : 0, telegramChatId, now, now)
+    .run();
+  return getSettings(db, ownerId);
+}
+
+async function ensureJobs(db) {
+  const now = nowIso();
+  // Job yang lead-nya sudah tidak ada lagi tidak boleh ikut dihitung sebagai
+  // antrean. Tanpa pembersihan ini, angka robot bisa lebih besar dari
+  // Corporate Engine dan membuat progres terlihat salah.
+  await db
+    .prepare(
+      "DELETE FROM corporate_robot_jobs WHERE lead_id NOT IN (SELECT id FROM corporate_leads)",
+    )
+    .run();
+  await db
+    .prepare(
+      `INSERT INTO corporate_robot_jobs
+        (lead_id, stage, status, need_score, need_label, need_evidence,
+         contact_status, contact_confidence, contact_evidence, attempts,
+         last_error, next_run_at, published_at, telegram_sent_at, created_at, updated_at)
+       SELECT l.id, 'finding', 'queued', 0, '', '[]', 'pending', 0, '[]', 0,
+              '', ?, '', '', ?, ?
+       FROM corporate_leads l
+       WHERE NOT EXISTS (
+         SELECT 1 FROM corporate_robot_jobs j WHERE j.lead_id = l.id
+       )`,
+    )
+    .bind(now, now, now)
+    .run();
+  // Job lama yang dulu berhenti hanya karena skor kebutuhan belum terbukti
+  // tetap harus diverifikasi kontaknya. Job yang berhenti karena validasi
+  // gagal tidak direset berulang kali.
+  await db
+    .prepare(
+      `UPDATE corporate_robot_jobs
+       SET stage = 'clarification', status = 'queued', attempts = 0,
+           next_run_at = ?, last_error = '', updated_at = ?
+       WHERE stage = 'paused'
+         AND attempts < 3`,
+    )
+    .bind(now, now)
+    .run();
+  // Stage publish versi lama melakukan Telegram + Prospek sekaligus. Pecah
+  // data lama ke agen Telegram terlebih dahulu agar perilakunya konsisten.
+  await db
+    .prepare(
+      "UPDATE corporate_robot_jobs SET stage = 'publish_telegram', updated_at = ? WHERE stage = 'publish'",
+    )
+    .bind(now)
+    .run();
+}
+
+const NEED_DEFINITIONS = [
+  {
+    id: "internet",
+    label: "Menyebut internet/WiFi/bandwidth",
+    weight: 14,
+    re: /\b(?:wifi|wi-?fi|internet|bandwidth|hotspot|koneksi|uplink)\b/i,
+  },
+  {
+    id: "network",
+    label: "Menyebut perangkat/jaringan",
+    weight: 18,
+    re: /\b(?:access point|mikrotik|router|jaringan|network|lan|vpn|firewall|switch|cctv)\b/i,
+  },
+  {
+    id: "expansion",
+    label: "Sinyal ekspansi/gedung baru",
+    weight: 16,
+    re: /\b(?:renovasi|pembangunan|gedung baru|cabang baru|ekspansi|expansion|new branch|grand opening|pengembangan)\b/i,
+  },
+  {
+    id: "hiring",
+    label: "Membuka posisi/rekrutmen",
+    weight: 8,
+    re: /\b(?:lowongan|career|karir|rekrutmen|hiring|dibutuhkan|open position)\b/i,
+  },
+  {
+    id: "it-role",
+    label: "Menyebut peran/divisi IT",
+    weight: 12,
+    re: /\b(?:it support|network engineer|sysadmin|system administrator|teknisi|helpdesk|teknologi informasi|divisi it)\b/i,
+  },
+  {
+    id: "many-users",
+    label: "Operasional dengan banyak pengguna",
+    weight: 6,
+    re: /\b(?:reservasi|booking|tamu|guest|siswa|mahasiswa|laboratorium komputer|kampus|ruang meeting|co-?working)\b/i,
+  },
+];
+
+function excerptAround(text, index) {
+  const start = Math.max(0, index - 80);
+  return clean(text.slice(start, index + 150)).slice(0, 190);
+}
+
+/** Agen Finding 1: hanya membaca website resmi. */
+async function runFindingProfileAgent(lead, options = {}) {
+  const website = clean(lead.website);
+  if (!website) {
+    return {
+      id: "finding-profile",
+      name: "Profil Entitas",
+      status: "skipped",
+      summary: "Website belum tersedia; agen profil tidak memiliki halaman untuk dibaca.",
+      evidence: [],
+      text: "",
+      pages: [],
+    };
+  }
+  try {
+    const sitePages = Math.max(1, Math.min(4, Number(options.sitePages) || 2));
+    const site = await readPublicText(website, sitePages);
+    const text = clean(site.text);
+    if (!site.pages.length || text.length < 40) {
+      return {
+        id: "finding-profile",
+        name: "Profil Entitas",
+        status: "empty",
+        summary: `Website ${website} tidak dapat dibaca atau isinya terlalu tipis.`,
+        evidence: [],
+        text,
+        pages: site.pages,
+      };
+    }
+    return {
+      id: "finding-profile",
+      name: "Profil Entitas",
+      status: "ok",
+      summary: `${site.pages.length} halaman website terbaca (${text.length} karakter).`,
+      evidence: site.pages.slice(0, 3).map((url) => `Halaman dibaca: ${url}`),
+      text,
+      pages: site.pages,
+    };
+  } catch (error) {
+    return {
+      id: "finding-profile",
+      name: "Profil Entitas",
+      status: "error",
+      summary: `Website ${website} gagal dibaca: ${
+        error instanceof Error ? error.message : "kesalahan tidak diketahui"
+      }.`,
+      evidence: [],
+      text: "",
+      pages: [],
+    };
+  }
+}
+
+/** Agen Finding 2: hanya mencari sumber publik lewat Exa; tidak membaca website. */
+async function runFindingSignalAgent(lead, env = {}, options = {}) {
+  if (!clean(env.EXA_API_KEY)) {
+    return {
+      id: "finding-signals",
+      name: "Sinyal Publik",
+      status: "disabled",
+      summary: "Exa belum aktif; agen sinyal publik tidak dijalankan.",
+      evidence: [],
+      results: [],
+      error: "",
+    };
+  }
+  if (options.run === false) {
+    return {
+      id: "finding-signals",
+      name: "Sinyal Publik",
+      status: "skipped",
+      summary: "Dilewati karena opsi pencarian publik dimatikan.",
+      evidence: [],
+      results: [],
+      error: "",
+    };
+  }
+
+  const search = await exaSearch(
+    env,
+    `"${lead.name}" ${[lead.area, lead.city].filter(Boolean).join(" ")} kebutuhan internet, WiFi, jaringan, access point, Mikrotik, bandwidth, atau upgrade IT.`,
+    { numResults: 5 },
+  );
+  const results = [];
+  for (const result of search.results || []) {
+    const highlights = Array.isArray(result?.highlights) ? result.highlights : [];
+    const text = clean(
+      `${result?.title || ""} ${highlights.join(" ")} ${result?.url || ""}`,
+    );
+    if (!searchResultMatches(lead, text)) continue;
+    results.push({
+      text,
+      source: /linkedin\.com/i.test(result?.url || "") ? "LinkedIn/publik" : "sumber publik",
+      url: clean(result?.url),
+    });
+  }
+  return {
+    id: "finding-signals",
+    name: "Sinyal Publik",
+    status: results.length > 0 ? "ok" : "empty",
+    summary:
+      results.length > 0
+        ? `${results.length} hasil publik relevan ditemukan lewat Exa.`
+        : "Exa tidak menemukan hasil publik yang relevan.",
+    evidence: results.slice(0, 3).map(
+      (result) => `${result.source}: ${result.url || result.text.slice(0, 120)}`,
+    ),
+    results,
+    error: search.error || "",
+  };
+}
+
+/** Agen Finding 3: hanya menilai hasil dua agen sebelumnya; tidak mengambil data baru. */
+function runFindingQualifierAgent(lead, profile, signal) {
+  const base = lead.category === "hotel" ? 34 : lead.category === "school" ? 36 : 22;
+  const evidence = [];
+  const seen = new Set();
+  let score = base;
+
+  const scan = (text, source) => {
+    if (!text) return;
+    for (const definition of NEED_DEFINITIONS) {
+      if (seen.has(definition.id)) continue;
+      const match = definition.re.exec(text);
+      if (!match) continue;
+      seen.add(definition.id);
+      score += definition.weight;
+      evidence.push(`${definition.label} — ${source} — ${excerptAround(text, match.index)}`);
+    }
+  };
+
+  scan(profile.text, "Profil Entitas/website");
+  for (const result of signal.results || []) {
+    scan(result.text, result.source);
+  }
+
+  score = Math.max(0, Math.min(100, score));
+  const qualified = evidence.length > 0 && score >= 48;
+  const label =
+    score >= 75
+      ? "Kebutuhan kuat"
+      : score >= 58
+        ? "Peluang baik"
+        : score >= 42
+          ? "Perlu verifikasi"
+          : "Belum terbukti";
+
+  return {
+    id: "finding-qualifier",
+    name: "Penilai Kebutuhan",
+    status: "ok",
+    summary: `Skor ${score}/100 · ${label} · ${evidence.length} sinyal dari dua agen sebelumnya.`,
+    evidence: evidence.slice(0, 4),
+    score,
+    label,
+    qualified,
+    allEvidence: evidence,
+  };
+}
+
+/**
+ * Orkestrasi tiga agen Finding. Setiap agen memiliki input dan proses sendiri:
+ * profil membaca website, sinyal mencari sumber publik, lalu penilai hanya
+ * mengolah keluaran keduanya. Hasil per agen dikembalikan untuk ditampilkan.
+ */
+export async function assessNeed(lead, env = {}, options = {}) {
+  const shouldRunSignal = options.exaSearch !== false;
+  const [profile, signal] = await Promise.all([
+    runFindingProfileAgent(lead, options),
+    runFindingSignalAgent(lead, env, { run: shouldRunSignal }),
+  ]);
+  const qualifier = runFindingQualifierAgent(lead, profile, signal);
+  const agentResults = [profile, signal, qualifier];
+
+  return {
+    score: qualifier.score,
+    label: qualifier.label,
+    evidence: qualifier.allEvidence.slice(0, 6),
+    qualified: qualifier.qualified,
+    exaEnabled: signal.status !== "disabled",
+    exaError: signal.error || "",
+    agents: agentResults.map((agent) => ({
+      id: agent.id,
+      name: agent.name,
+      status: agent.status,
+      summary: agent.summary,
+      evidence: agent.evidence.slice(0, 4),
+    })),
+  };
+}
+
+function searchResultMatches(lead, haystack) {
+  const tokens = clean(lead.name)
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter((token) => token.length >= 4);
+  const city = clean(lead.city).toLowerCase().replace(/^kota\s+/, "");
+  const area = clean(lead.area).toLowerCase();
+  const hay = haystack.toLowerCase();
+  return (
+    tokens.some((token) => hay.includes(token)) ||
+    Boolean(city && hay.includes(city)) ||
+    Boolean(area && hay.includes(area))
+  );
+}
+
+function escapeHtml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function categoryLabel(category) {
+  return category === "hotel" ? "Hotel" : category === "school" ? "Sekolah" : "Perusahaan";
+}
+
+function telegramConfig(env, settings) {
+  const token = clean(env?.TELEGRAM_BOT_TOKEN);
+  const chatId = clean(settings?.telegram_chat_id) || clean(env?.TELEGRAM_CHAT_ID);
+  return {
+    token,
+    chatId,
+    target: clean(env?.TELEGRAM_TARGET_PHONE) || DEFAULT_TELEGRAM_PHONE,
+    configured: Boolean(token && chatId),
+  };
+}
+
+async function sendTelegram(env, settings, text) {
+  const config = telegramConfig(env, settings);
+  if (!config.token) {
+    return { ok: false, configured: false, error: "TELEGRAM_BOT_TOKEN belum diatur." };
+  }
+  if (!config.chatId) {
+    return { ok: false, configured: false, error: "TELEGRAM_CHAT_ID belum diatur." };
+  }
+  try {
+    const response = await fetch(
+      `https://api.telegram.org/bot${config.token}/sendMessage`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: config.chatId,
+          text,
+          parse_mode: "HTML",
+          disable_web_page_preview: true,
+        }),
+        signal: AbortSignal.timeout(12_000),
+      },
+    );
+    const body = await response.json().catch(() => null);
+    if (!response.ok || body?.ok === false) {
+      const description =
+        typeof body?.description === "string" ? body.description.trim() : "";
+      return {
+        ok: false,
+        configured: true,
+        error: description
+          ? `Telegram menolak pesan: ${description}`
+          : "Telegram menolak pesan. Periksa bot token dan chat ID.",
+      };
+    }
+    return {
+      ok: true,
+      configured: true,
+      error: "",
+      messageId: String(body?.result?.message_id || ""),
+    };
+  } catch (error) {
+    console.error(
+      "corporate_robot_telegram_error",
+      error instanceof Error ? error.message : "unknown error",
+    );
+    // Hasil jaringan yang ambigu tidak boleh di-retry otomatis: Telegram bisa
+    // saja sudah menerima pesan sebelum respons terputus.
+    return {
+      ok: false,
+      configured: true,
+      uncertain: true,
+      error: "Telegram tidak dapat dihubungi; status pengiriman belum pasti.",
+    };
+  }
+}
+
+const TELEGRAM_PLACEHOLDER = "Belum tersedia";
+const TELEGRAM_MESSAGE_TYPE = "lead_ready";
+
+function telegramOutboxId(leadId, messageType = TELEGRAM_MESSAGE_TYPE) {
+  return `${leadId}:${messageType}`;
+}
+
+async function enqueueTelegramOutbox(db, leadId, messageType = TELEGRAM_MESSAGE_TYPE) {
+  const now = nowIso();
+  const id = telegramOutboxId(leadId, messageType);
+  await db
+    .prepare(
+      `INSERT INTO corporate_telegram_outbox
+        (id, lead_id, message_type, status, attempts, claimed_at, sent_at,
+         telegram_message_id, last_error, created_at, updated_at)
+       VALUES (?, ?, ?, 'pending', 0, '', '', '', '', ?, ?)
+       ON CONFLICT(lead_id, message_type) DO NOTHING`,
+    )
+    .bind(id, leadId, messageType, now, now)
+    .run();
+  return db
+    .prepare("SELECT * FROM corporate_telegram_outbox WHERE id = ?")
+    .bind(id)
+    .first();
+}
+
+/** Melengkapi outbox untuk lead lama yang belum punya baris outbox. */
+async function seedTelegramOutbox(db) {
+  const now = nowIso();
+  await db
+    .prepare(
+      `INSERT OR IGNORE INTO corporate_telegram_outbox
+        (id, lead_id, message_type, status, attempts, claimed_at, sent_at,
+         telegram_message_id, last_error, created_at, updated_at)
+       SELECT l.id || ':' || ?, l.id, ?, 'pending', 0, '', '', '', '', ?, ?
+       FROM corporate_robot_jobs j
+       JOIN corporate_leads l ON l.id = j.lead_id
+       WHERE j.telegram_sent_at = ''
+         AND j.stage IN ('publish', 'publish_telegram', 'publish_prospect', 'done')
+         AND l.contact_name <> '' AND l.phone <> ''`,
+    )
+    .bind(TELEGRAM_MESSAGE_TYPE, TELEGRAM_MESSAGE_TYPE, now, now)
+    .run();
+}
+
+/**
+ * Mengirim isi outbox secara idempoten. Klaim dilakukan dengan UPDATE atomik
+ * sebelum send, sehingga dua proses tidak dapat mengirim baris yang sama.
+ */
+async function flushTelegramOutbox(db, env, settings, limit = 2, onlyId = "") {
+  const config = telegramConfig(env, settings);
+  if (!config.configured) return { checked: 0, sent: 0, items: [] };
+
+  const where = onlyId
+    ? "o.id = ?"
+    : "o.status IN ('pending', 'failed')";
+  const bindings = onlyId ? [onlyId] : [];
+  const rows = await db
+    .prepare(
+      `SELECT o.id AS outbox_id, o.lead_id AS outbox_lead_id,
+              o.message_type, o.status AS outbox_status,
+              o.attempts AS outbox_attempts, o.sent_at AS outbox_sent_at,
+              o.telegram_message_id, o.last_error AS outbox_error, l.*
+       FROM corporate_telegram_outbox o
+       JOIN corporate_leads l ON l.id = o.lead_id
+       WHERE ${where}
+       ORDER BY o.created_at ASC
+       LIMIT ?`,
+    )
+    .bind(...bindings, limit)
+    .all();
+
+  const items = [];
+  let sent = 0;
+  for (const row of rows.results ?? []) {
+    const outbox = {
+      id: row.outbox_id,
+      leadId: row.outbox_lead_id,
+      messageType: row.message_type,
+      status: row.outbox_status,
+      sentAt: row.outbox_sent_at || "",
+      error: row.outbox_error || "",
+    };
+
+    if (outbox.status === "sent") {
+      items.push({ ...outbox, alreadySent: true });
+      continue;
+    }
+
+    const claimedAt = nowIso();
+    const claim = await db
+      .prepare(
+        `UPDATE corporate_telegram_outbox
+         SET status = 'sending', attempts = attempts + 1,
+             claimed_at = ?, updated_at = ?
+         WHERE id = ? AND status IN ('pending', 'failed')`,
+      )
+      .bind(claimedAt, claimedAt, outbox.id)
+      .run();
+    if (!claim.meta?.changes) {
+      items.push({
+        ...outbox,
+        status: "sending",
+        error: "Pesan sedang dikirim oleh proses lain.",
+      });
+      continue;
+    }
+
+    const message = buildTelegramMessage(rowToLead(row));
+    if (!message) {
+      const error =
+        "Telegram tidak dikirim: nama PIC atau nomor PIC belum lengkap.";
+      await db
+        .prepare(
+          `UPDATE corporate_telegram_outbox
+           SET status = 'failed', claimed_at = '', last_error = ?, updated_at = ?
+           WHERE id = ?`,
+        )
+        .bind(error, nowIso(), outbox.id)
+        .run();
+      items.push({ ...outbox, status: "failed", error });
+      continue;
+    }
+
+    const result = await sendTelegram(env, settings, message);
+    const finishedAt = nowIso();
+    if (result.ok) {
+      await db
+        .prepare(
+          `UPDATE corporate_telegram_outbox
+           SET status = 'sent', sent_at = ?, telegram_message_id = ?,
+               claimed_at = '', last_error = '', updated_at = ?
+           WHERE id = ?`,
+        )
+        .bind(
+          finishedAt,
+          result.messageId || "",
+          finishedAt,
+          outbox.id,
+        )
+        .run();
+      await updateJob(db, outbox.leadId, {
+        telegram_sent_at: finishedAt,
+      }).catch(() => undefined);
+      sent += 1;
+      items.push({
+        ...outbox,
+        status: "sent",
+        sentAt: finishedAt,
+        alreadySent: false,
+        error: "",
+      });
+      continue;
+    }
+
+    // `failed` aman dicoba lagi. `uncertain` terjadi saat koneksi putus setelah
+    // request dikirim; jangan retry otomatis agar tidak menghasilkan pesan ganda.
+    const nextStatus = result.uncertain ? "uncertain" : "failed";
+    await db
+      .prepare(
+        `UPDATE corporate_telegram_outbox
+         SET status = ?, claimed_at = '', last_error = ?, updated_at = ?
+         WHERE id = ?`,
+      )
+      .bind(nextStatus, result.error || "Telegram gagal.", finishedAt, outbox.id)
+      .run();
+    items.push({
+      ...outbox,
+      status: nextStatus,
+      error: result.error || "Telegram gagal.",
+    });
+  }
+
+  return { checked: (rows.results ?? []).length, sent, items };
+}
+
+function telegramLeadReady(lead) {
+  // Telegram hanya mensyaratkan nama PIC dan minimal satu nomor PIC valid.
+  // E-mail dan website boleh kosong; koordinat selalu diisi dari entitas
+  // atau pusat wilayah oleh resolveLeadCoordinates.
+  return Boolean(sanitizePicName(lead.contactName) && validPicPhone(lead.phone));
+}
+
+function prospectLeadReady(lead) {
+  const coordinate = resolveLeadCoordinates(lead);
+  return Boolean(
+    lead.validationStatus === "verified" &&
+      clean(lead.website) &&
+      clean(lead.email) &&
+      validPicPhone(lead.phone) &&
+      sanitizePicName(lead.contactName) &&
+      coordinate &&
+      !coordinate.approximate &&
+      Number.isFinite(coordinate.latitude) &&
+      Number.isFinite(coordinate.longitude) &&
+      coordinate.latitude !== 0 &&
+      coordinate.longitude !== 0,
+  );
+}
+
+/**
+ * Format tetap tujuh baris. Hanya nama PIC dan nomor PIC yang wajib; baris
+ * lain yang belum tersedia diisi placeholder agar pesan tetap lengkap.
+ */
+export function buildTelegramMessage(lead) {
+  if (!telegramLeadReady(lead)) return "";
+  const coordinate = resolveLeadCoordinates(lead);
+  const mapsUrl = coordinate
+    ? `https://www.google.com/maps?q=${coordinate.latitude.toFixed(6)},${coordinate.longitude.toFixed(6)}`
+    : TELEGRAM_PLACEHOLDER;
+  const location =
+    clean(lead.coordinateAddress) ||
+    coordinate?.coordinateAddress ||
+    [clean(lead.area), clean(lead.city)].filter(Boolean).join(", ") ||
+    TELEGRAM_PLACEHOLDER;
+  const entity = categoryLabel(lead.category);
+  return [
+    `Nama ${entity} : ${escapeHtml(clean(lead.name) || TELEGRAM_PLACEHOLDER)}`,
+    `Titik Koordinat : ${mapsUrl}`,
+    `Lokasi : ${escapeHtml(location)}`,
+    `Nama PIC : ${escapeHtml(sanitizePicName(lead.contactName))}`,
+    `Nomor PIC : ${escapeHtml(formatPicPhones(lead.phone, 2))}`,
+    `Alamat E-mail : ${escapeHtml(clean(lead.email) || TELEGRAM_PLACEHOLDER)}`,
+    `Alamat Website ${entity} : ${escapeHtml(clean(lead.website) || TELEGRAM_PLACEHOLDER)}`,
+  ].join("\n");
+}
+
+async function notifyPending(db, env, settings, limit = 2) {
+  const config = telegramConfig(env, settings);
+  if (!config.configured) return { checked: 0, sent: 0 };
+  await seedTelegramOutbox(db);
+  const result = await flushTelegramOutbox(db, env, settings, limit);
+  return { checked: result.checked, sent: result.sent };
+}
+
+function normalizeCompanyName(value) {
+  return clean(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\b(pt|cv|tbk|persero|ud|pd)\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Menambahkan lead yang sudah lolos ke data Prospek milik pemilik robot. Ini
+ * dilakukan server-side agar hasil robot langsung tersedia di aplikasi.
+ */
+export async function publishLeadToProspect(db, ownerId, lead) {
+  if (!ownerId) return { added: false, reason: "Pemilik robot belum ditentukan." };
+  if (!prospectLeadReady(lead)) {
+    return {
+      added: false,
+      reason: "Lead belum lolos validasi website, e-mail PIC, telepon PIC, dan koordinat.",
+    };
+  }
+  const latitude = Number(lead.latitude);
+  const longitude = Number(lead.longitude);
+  await ensureRobotSchema(db);
+  const row = await db
+    .prepare("SELECT payload, revision FROM app_state WHERE user_id = ?")
+    .bind(ownerId)
+    .first();
+
+  let data;
+  let revision = 0;
+  if (row) {
+    revision = Number(row.revision || 0);
+    try {
+      data = JSON.parse(row.payload);
+    } catch {
+      return { added: false, reason: "Data akun tidak dapat dibaca." };
+    }
+  } else {
+    data = {
+      companies: [],
+      quotes: [],
+      locations: ["Jakarta"],
+      profile: { username: "", phone: "", email: "" },
+    };
+  }
+  if (!data || !Array.isArray(data.companies)) {
+    return { added: false, reason: "Struktur Prospek tidak dikenali." };
+  }
+  if (data.companies.length > 4900) {
+    return { added: false, reason: "Batas jumlah prospek tercapai." };
+  }
+
+  const existing = data.companies.find(
+    (company) =>
+      company?.sourceLeadId === lead.id ||
+      normalizeCompanyName(company?.name) === normalizeCompanyName(lead.name),
+  );
+
+  const now = nowIso();
+  const location =
+    [clean(lead.area), clean(lead.city)].filter(Boolean).join(", ") ||
+    data.locations?.[0] ||
+    "Jakarta";
+  const robotFields = {
+    name: clean(lead.name),
+    location,
+    email: clean(lead.email),
+    picPhone: formatPicPhones(lead.phone, 2),
+    website: clean(lead.website),
+    contactName: sanitizePicName(lead.contactName),
+    contactRole: clean(lead.contactRole),
+    contactSource: clean(lead.contactSource),
+    latitude,
+    longitude,
+    coordinateAddress: clean(lead.coordinateAddress),
+    coordinateSource: clean(lead.coordinateSource),
+    validationStatus: "verified",
+    validationEvidence: lead.validationEvidence || [],
+    validatedAt: lead.validatedAt || now,
+    aiConfidence: Number(lead.aiConfidence || 0),
+    source: "Corporate Engine · Robot AI",
+    sourceLeadId: lead.id,
+  };
+
+  let companyId = "";
+  let added = false;
+  if (existing) {
+    companyId = existing.id;
+    const updated = {
+      ...existing,
+      ...robotFields,
+      id: existing.id,
+      createdAt: existing.createdAt || now,
+      visitDate: existing.visitDate || "",
+      lostReason: existing.lostReason || "",
+      lostAt: existing.lostAt || "",
+    };
+    data.companies = data.companies.map((company) =>
+      company.id === existing.id ? updated : company,
+    );
+  } else {
+    const company = {
+      id: `co_robot_${crypto.randomUUID()}`,
+      ...robotFields,
+      visitDate: "",
+      createdAt: now,
+      lostReason: "",
+      lostAt: "",
+    };
+    companyId = company.id;
+    added = true;
+    data.companies = [company, ...data.companies];
+  }
+  if (Array.isArray(data.locations) && !data.locations.includes(location)) {
+    data.locations = [...data.locations, location];
+  }
+  const payload = JSON.stringify(data);
+  if (payload.length > MAX_APP_STATE_CHARS) {
+    return { added: false, reason: "Data Prospek terlalu besar untuk ditambah otomatis." };
+  }
+  if (revision === 0) {
+    const result = await db
+      .prepare(
+        "INSERT INTO app_state (user_id, payload, revision, updated_at) VALUES (?, ?, 1, ?) ON CONFLICT(user_id) DO NOTHING",
+      )
+      .bind(ownerId, payload, now)
+      .run();
+    if (!result.meta?.changes) {
+      return { added: false, reason: "Data berubah saat robot menyimpan; tambahkan lewat Visit." };
+    }
+    return { added, companyId, updated: Boolean(existing), reason: "" };
+  }
+
+  const result = await db
+    .prepare(
+      "UPDATE app_state SET payload = ?, revision = revision + 1, updated_at = ? WHERE user_id = ? AND revision = ?",
+    )
+    .bind(payload, now, ownerId, revision)
+    .run();
+  if (!result.meta?.changes) {
+    return { added: false, reason: "Data berubah saat robot menyimpan; tambahkan lewat Visit." };
+  }
+  return { added, companyId, updated: Boolean(existing), reason: "" };
+}
+
+// D1 memakai optimistic revision untuk app_state. Saat beberapa lead selesai
+// bersamaan, jangan biarkan dua penulisan Prospek saling menimpa; antrekan
+// penulisan state di dalam isolate yang sama.
+let publishQueue = Promise.resolve();
+function enqueuePublish(work) {
+  const next = publishQueue.then(work, work);
+  publishQueue = next.then(
+    () => undefined,
+    () => undefined,
+  );
+  return next;
+}
+
+/**
+ * Agen Publish 2 — Penulis Prospek. Hanya menulis data yang sudah lolos
+ * Klarifikasi ke Prospek; tidak mengirim Telegram.
+ */
+async function publishProspectAgent(db, settings, ownerId, lead) {
+  if (!settings?.auto_publish || !ownerId) {
+    return { added: false, updated: false, reason: "Penulisan Prospek belum diaktifkan." };
+  }
+  return enqueuePublish(() => publishLeadToProspect(db, ownerId, lead));
+}
+
+/**
+ * Agen Publish 1 — Kurir Telegram. Semua pengiriman masuk ke outbox dengan
+ * kunci unik `lead_id + jenis pesan`; tidak ada jalur kirim langsung.
+ */
+async function sendPublishTelegram(db, row, env, settings, lead) {
+  const configured = Boolean(telegramConfig(env, settings).configured);
+  if (row.telegram_sent_at) {
+    return {
+      ok: true,
+      configured,
+      alreadySent: true,
+      sentAt: row.telegram_sent_at,
+      error: "",
+    };
+  }
+  if (!telegramLeadReady(lead)) {
+    return {
+      ok: false,
+      configured,
+      alreadySent: false,
+      sentAt: "",
+      error: "Telegram tidak dikirim: nama PIC atau nomor PIC belum lengkap.",
+    };
+  }
+
+  const leadId = row.lead_id || lead.id;
+  const outbox = await enqueueTelegramOutbox(db, leadId);
+  if (outbox?.status === "sent") {
+    return {
+      ok: true,
+      configured,
+      alreadySent: true,
+      sentAt: outbox.sent_at || "",
+      error: "",
+    };
+  }
+
+  const flushed = await flushTelegramOutbox(db, env, settings, 1, outbox.id);
+  const item = flushed.items[0];
+  if (item?.status === "sent") {
+    return {
+      ok: true,
+      configured,
+      alreadySent: Boolean(item.alreadySent),
+      sentAt: item.sentAt || "",
+      error: "",
+    };
+  }
+  return {
+    ok: false,
+    configured,
+    alreadySent: false,
+    sentAt: "",
+    pending: item?.status === "sending",
+    error: item?.error || "Telegram belum dapat dikirim.",
+  };
+}
+
+async function advanceJob(db, row, env, settings, ownerId) {
+  let lead = rowToLead(row);
+  let stage = row.stage || "finding";
+  // Job lama dari sebelum pemisahan stage Publish.
+  if (stage === "publish") stage = "publish_telegram";
+  let attempts = Number(row.attempts || 0);
+  let needScore = Number(row.need_score || 0);
+  let needLabel = row.need_label || "";
+  let needEvidence = parseEvidence(row.need_evidence);
+  let contactStatus = row.contact_status || "pending";
+  let contactConfidence = Number(row.contact_confidence || 0);
+  let contactEvidence = parseEvidence(row.contact_evidence);
+  let published = 0;
+  let prospectAdded = 0;
+  let notified = 0;
+  let found = false;
+
+  for (let step = 0; step < 4; step += 1) {
+    if (stage === "finding") {
+      const assessment = await assessNeed(lead, env, {
+        exaSearch: true,
+        sitePages: 2,
+      });
+      needScore = assessment.score;
+      needLabel = assessment.label;
+      const findingTrace = (assessment.agents || []).flatMap((agent) => [
+        `[${agent.name}] ${findingStatusLabel(agent.status)}: ${agent.summary}`,
+        ...agent.evidence.map((item) => `[${agent.name}] ${item}`),
+      ]);
+      needEvidence = findingTrace.slice(0, 12);
+      attempts += 1;
+      // Skor kebutuhan tidak boleh menghentikan verifikasi identitas dan
+      // kontak. Semua lead Corporate Engine tetap masuk ke klarifikasi agar
+      // data Prospek hanya berisi informasi yang lengkap dan tervalidasi.
+      found = true;
+      stage = "clarification";
+      await updateJob(db, lead.id, {
+        stage,
+        status: assessment.qualified ? "qualified" : "needs_validation",
+        need_score: needScore,
+        need_label: needLabel,
+        need_evidence: JSON.stringify(needEvidence),
+        attempts,
+        last_error: assessment.qualified
+          ? ""
+          : "Kebutuhan belum terbukti; validasi kontak tetap dilakukan.",
+        next_run_at: nowIso(),
+      });
+      continue;
+    }
+
+    if (stage === "clarification") {
+      let researched = null;
+      try {
+        researched = await researchCorporateLead(db, lead.id, env);
+      } catch (error) {
+        console.error(
+          "corporate_robot_research_error",
+          error instanceof Error ? error.message : "unknown error",
+        );
+      }
+      if (researched?.lead) lead = researched.lead;
+      const validation = researched?.validation || {};
+      contactStatus = validation.status || "missing";
+      contactConfidence = Number(researched?.lead?.aiConfidence || 0);
+      contactEvidence = Array.isArray(validation.evidence)
+        ? validation.evidence
+        : [];
+      attempts += 1;
+
+      // Klarifikasi selesai bila sudah ada nama PIC + nomor valid. Stage
+      // berikutnya hanya mengirim Telegram; stage ini tidak menulis Prospek.
+      if (telegramLeadReady(lead)) {
+        found = true;
+        stage = "publish_telegram";
+        await updateJob(db, lead.id, {
+          stage,
+          status: "ready_to_publish",
+          contact_status: contactStatus,
+          contact_confidence: contactConfidence,
+          contact_evidence: JSON.stringify(contactEvidence),
+          attempts,
+          last_error: "",
+          next_run_at: nowIso(),
+        });
+        continue;
+      }
+
+      const exhausted = attempts >= 3;
+      const nextStage = exhausted ? "paused" : "clarification";
+      await updateJob(db, lead.id, {
+        stage: nextStage,
+        status: exhausted ? "waiting" : "needs_validation",
+        contact_status: contactStatus,
+        contact_confidence: contactConfidence,
+        contact_evidence: JSON.stringify(contactEvidence),
+        attempts,
+        last_error:
+          "Lead belum lolos validasi website, e-mail PIC, nomor PIC, dan koordinat. Sumber publik akan diperiksa lagi.",
+        next_run_at: exhausted ? addDays(1) : addHours(2),
+      });
+      return {
+        found: false,
+        published: 0,
+        prospectAdded: 0,
+        notified,
+        job: await readJob(db, lead.id),
+      };
+    }
+
+    if (stage === "publish_telegram") {
+      // Agen Publish 1 — hanya mengirim Telegram. Tidak menulis Prospek.
+      const telegram = await sendPublishTelegram(db, row, env, settings, lead);
+      if (telegram.ok) {
+        row = { ...row, telegram_sent_at: telegram.sentAt };
+        if (!telegram.alreadySent) notified = 1;
+      }
+
+      if (contactStatus !== "verified" || !prospectLeadReady(lead)) {
+        const exhausted = attempts >= 3;
+        const nextStage = exhausted ? "paused" : "clarification";
+        await updateJob(db, lead.id, {
+          stage: nextStage,
+          status: exhausted ? "waiting" : "needs_validation",
+          contact_status: contactStatus || "partial",
+          contact_confidence: contactConfidence,
+          contact_evidence: JSON.stringify(contactEvidence),
+          attempts,
+          last_error:
+            telegram.error ||
+            "Telegram selesai; data Prospek belum lengkap dan akan diklarifikasi lagi.",
+          next_run_at: exhausted ? addDays(1) : addHours(2),
+        });
+        return {
+          found: false,
+          published: 0,
+          prospectAdded: 0,
+          notified,
+          job: await readJob(db, lead.id),
+        };
+      }
+
+      stage = "publish_prospect";
+      await updateJob(db, lead.id, {
+        stage,
+        status: "ready_to_publish",
+        contact_status: contactStatus,
+        contact_confidence: contactConfidence,
+        contact_evidence: JSON.stringify(contactEvidence),
+        attempts,
+        last_error: "",
+        next_run_at: nowIso(),
+      });
+      continue;
+    }
+
+    if (stage === "publish_prospect") {
+      // Agen Publish 2 — hanya menulis Prospek. Tidak mengirim Telegram.
+      if (contactStatus !== "verified" || !prospectLeadReady(lead)) {
+        const exhausted = attempts >= 3;
+        const nextStage = exhausted ? "paused" : "clarification";
+        await updateJob(db, lead.id, {
+          stage: nextStage,
+          status: exhausted ? "waiting" : "needs_validation",
+          contact_status: contactStatus || "partial",
+          contact_confidence: contactConfidence,
+          contact_evidence: JSON.stringify(contactEvidence),
+          attempts,
+          last_error:
+            "Validasi Prospek belum lengkap; lead dikembalikan ke Klarifikasi.",
+          next_run_at: exhausted ? addDays(1) : addHours(2),
+        });
+        return {
+          found: false,
+          published: 0,
+          prospectAdded: 0,
+          notified,
+          job: await readJob(db, lead.id),
+        };
+      }
+
+      const prospect = await publishProspectAgent(db, settings, ownerId, lead);
+      if (prospect.added || prospect.updated) prospectAdded = 1;
+
+      const now = nowIso();
+      attempts += 1;
+      published = 1;
+      await updateJob(db, lead.id, {
+        stage: "done",
+        status: "published",
+        contact_status: contactStatus,
+        contact_confidence: contactConfidence,
+        contact_evidence: JSON.stringify(contactEvidence),
+        attempts,
+        published_at: now,
+        telegram_sent_at: row.telegram_sent_at || "",
+        last_error:
+          prospect.reason && !prospect.added && !prospect.updated
+            ? prospect.reason
+            : "",
+      });
+      return {
+        found: true,
+        published,
+        prospectAdded,
+        notified,
+        job: await readJob(db, lead.id),
+      };
+    }
+
+    return {
+      found,
+      published,
+      prospectAdded,
+      notified,
+      job: await readJob(db, lead.id),
+    };
+  }
+
+  return {
+    found,
+    published,
+    prospectAdded,
+    notified,
+    job: await readJob(db, lead.id),
+  };
+}
+
+async function readStats(db) {
+  const stageRows = await db
+    .prepare(
+      `SELECT j.stage, COUNT(*) AS total
+       FROM corporate_robot_jobs j
+       JOIN corporate_leads l ON l.id = j.lead_id
+       GROUP BY j.stage`,
+    )
+    .all();
+  const stats = {
+    total: 0,
+    finding: 0,
+    clarification: 0,
+    publish: 0,
+    done: 0,
+    paused: 0,
+    active: 0,
+    published: 0,
+    notified: 0,
+  };
+  for (const row of stageRows.results ?? []) {
+    const count = Number(row.total || 0);
+    stats.total += count;
+    if (row.stage === "publish_telegram" || row.stage === "publish_prospect") {
+      stats.publish += count;
+    } else if (row.stage in stats) {
+      stats[row.stage] = count;
+    }
+  }
+  stats.active = stats.finding + stats.clarification + stats.publish;
+  const extras = await db
+    .prepare(
+      `SELECT
+        SUM(CASE WHEN j.published_at <> '' THEN 1 ELSE 0 END) AS published,
+        SUM(CASE WHEN j.telegram_sent_at <> '' THEN 1 ELSE 0 END) AS notified
+       FROM corporate_robot_jobs j
+       JOIN corporate_leads l ON l.id = j.lead_id`,
+    )
+    .first();
+  stats.published = Number(extras?.published || 0);
+  stats.notified = Number(extras?.notified || 0);
+  return stats;
+}
+
+export async function ensureCronOwner(db) {
+  await ensureCorporateSchema(db);
+  await ensureRobotSchema(db);
+  const anySettings = await db
+    .prepare("SELECT * FROM corporate_robot_settings ORDER BY updated_at DESC LIMIT 1")
+    .first();
+  if (anySettings) {
+    if (anySettings.enabled && anySettings.auto_publish) return anySettings;
+    return updateRobotSettings(db, anySettings.owner_id, {
+      enabled: true,
+      autoPublish: true,
+    });
+  }
+  const owner = await db
+    .prepare("SELECT user_id FROM app_state ORDER BY updated_at DESC LIMIT 1")
+    .first();
+  if (!owner?.user_id) return null;
+  return updateRobotSettings(db, owner.user_id, { enabled: true, autoPublish: true });
+}
+
+export async function markCronTick(db) {
+  await ensureCorporateSchema(db);
+  await ensureRobotSchema(db);
+  await writeMeta(db, "robot_last_cron_tick", nowIso());
+}
+
+export async function getCronHealth(db) {
+  if (!db) return { ok: false, lastTick: "", lastRun: "", lastRunStats: null };
+  await ensureCorporateSchema(db);
+  await ensureRobotSchema(db);
+  const last = await db
+    .prepare(
+      "SELECT started_at, finished_at, checked, found, published, notified, error FROM corporate_robot_runs ORDER BY started_at DESC LIMIT 1",
+    )
+    .first();
+  return {
+    ok: true,
+    lastTick: await readMeta(db, "robot_last_cron_tick"),
+    lastRun: await readMeta(db, "robot_last_run"),
+    lastRunStats: last
+      ? {
+          startedAt: last.started_at || "",
+          finishedAt: last.finished_at || "",
+          checked: Number(last.checked || 0),
+          found: Number(last.found || 0),
+          published: Number(last.published || 0),
+          notified: Number(last.notified || 0),
+          error: last.error || "",
+        }
+      : null,
+  };
+}
+
+export async function getRobotStatus(db, env = {}, ownerId = "") {
+  await ensureCorporateSchema(db);
+  await ensureRobotSchema(db);
+  await ensureJobs(db);
+  let settings = await getSettings(db, ownerId);
+  if (!settings) settings = await ensureCronOwner(db);
+  if (settings && (!settings.enabled || !settings.auto_publish)) {
+    settings = await updateRobotSettings(db, settings.owner_id, {
+      enabled: true,
+      autoPublish: true,
+    });
+  }
+  const stats = await readStats(db);
+  const rows = await db
+    .prepare(
+      `${JOB_SELECT}
+       WHERE j.stage IN ('finding', 'clarification', 'publish', 'publish_telegram', 'publish_prospect') OR j.published_at <> ''
+       ORDER BY (j.published_at <> '') DESC, j.need_score DESC, j.updated_at DESC
+       LIMIT 6`,
+    )
+    .all();
+  const jobs = (rows.results ?? []).map(rowToJob);
+  const lastRun = await db
+    .prepare(
+      "SELECT started_at, finished_at, checked, found, published, notified, error FROM corporate_robot_runs ORDER BY started_at DESC LIMIT 1",
+    )
+    .first();
+  const lastRunAt = lastRun?.finished_at || lastRun?.started_at || "";
+  const nextRunAt =
+    settings?.enabled && lastRunAt
+      ? new Date(Date.parse(lastRunAt) + ROBOT_INTERVAL_MS).toISOString()
+      : "";
+  const config = telegramConfig(env, settings);
+  const notes = [];
+  if (!env.EXA_API_KEY) {
+    notes.push(
+      "Pencarian lintas web (LinkedIn/direktori publik) belum aktif. Tambahkan EXA_API_KEY untuk memperdalam Finding dan Klarifikasi.",
+    );
+  }
+  if (!config.token) {
+    notes.push(
+      "Notifikasi Telegram belum aktif. Tambahkan TELEGRAM_BOT_TOKEN sebagai secret Worker.",
+    );
+  }
+  if (!config.chatId) {
+    notes.push(
+      "Chat ID Telegram belum diatur. Tambahkan TELEGRAM_CHAT_ID atau simpan chat ID lewat panel robot.",
+    );
+  }
+  notes.push(
+    "Scheduler 24/7 memakai GitHub Actions OIDC; tidak perlu repository secret tambahan.",
+  );
+  notes.push(
+    "Struktur 9 agen: 3 Finding (Profil Entitas, Sinyal Publik, Penilai Kebutuhan), 4 Klarifikasi (Scout, Contact Finder, Verifier, OpenOSINT), 2 Publish (Kurir Telegram, Penulis Prospek).",
+  );
+  notes.push(
+    "Klarifikasi memakai Exa Answer dan OpenOSINT native untuk DNS/DNS-over-HTTPS dan RDAP domain; Finding memakai website publik gratis dan Exa Search. Tidak ada provider WormGPT/FraudGPT/GhostGPT/HackerGPT/Hexstrike.",
+  );
+  notes.push(
+    "Publish dipisah menjadi dua stage: publish_telegram hanya mengirim pesan, publish_prospect hanya menulis daftar Prospek. Telegram dikirim satu kali setelah Klarifikasi menerima lead, tanpa perlu membuka aplikasi.",
+  );
+  notes.push(
+    "Telegram hanya mewajibkan nama PIC dan minimal satu nomor PIC valid. Sampai dua nomor (kontak perusahaan dan nomor PIC) ditampilkan pada baris Nomor PIC. E-mail atau website yang kosong memakai placeholder; koordinat selalu diisi dari titik entitas atau pusat wilayah lead. Pesan tetap tujuh baris.",
+  );
+
+  return {
+    enabled: true,
+    autoPublish: true,
+    telegramConfigured: config.configured,
+    telegramTokenSet: Boolean(config.token),
+    telegramChatIdSet: Boolean(config.chatId),
+    telegramTarget: config.target,
+    exaConfigured: Boolean(env.EXA_API_KEY),
+    openosintConfigured: openosintConfigured(env),
+    agents: agentStructure(env, config.configured),
+    cronConfigured: true,
+    lastRunAt,
+    nextRunAt,
+    lastRun: lastRun
+      ? {
+          checked: Number(lastRun.checked || 0),
+          found: Number(lastRun.found || 0),
+          published: Number(lastRun.published || 0),
+          notified: Number(lastRun.notified || 0),
+          error: lastRun.error || "",
+        }
+      : null,
+    stats,
+    jobs,
+    notes,
+  };
+}
+
+export async function detectTelegramChat(db, env, ownerId) {
+  await ensureRobotSchema(db);
+  const token = clean(env?.TELEGRAM_BOT_TOKEN);
+  if (!token) {
+    return {
+      ok: false,
+      message: "TELEGRAM_BOT_TOKEN belum diatur. Buat bot di BotFather lalu simpan tokennya di Sites → Secrets.",
+    };
+  }
+
+  try {
+    const response = await fetch(
+      `https://api.telegram.org/bot${token}/getUpdates?limit=20&timeout=0`,
+      { signal: AbortSignal.timeout(12_000) },
+    );
+    const body = await response.json().catch(() => null);
+    if (!response.ok || body?.ok === false) {
+      const description =
+        typeof body?.description === "string" ? body.description.trim() : "";
+      return {
+        ok: false,
+        message: description
+          ? `Telegram menolak permintaan: ${description}`
+          : "Bot token belum valid atau Telegram menolak permintaan.",
+      };
+    }
+
+    let chat = null;
+    for (const update of Array.isArray(body?.result) ? body.result : []) {
+      const message = update?.message || update?.edited_message;
+      const candidate = message?.chat;
+      if (candidate && candidate.type === "private" && candidate.id) {
+        chat = candidate;
+      }
+    }
+    if (!chat) {
+      return {
+        ok: false,
+        message:
+          "Belum ada pesan. Buka bot Anda di Telegram, tekan Start atau kirim /start, lalu coba Deteksi lagi.",
+      };
+    }
+
+    const chatId = String(chat.id);
+    const current = await getSettings(db, ownerId);
+    await updateRobotSettings(db, ownerId, {
+      enabled: Boolean(current?.enabled),
+      telegramChatId: chatId,
+    });
+    const name = [chat.first_name, chat.last_name].filter(Boolean).join(" ");
+    return {
+      ok: true,
+      chatId,
+      message: `Chat ID ${chatId}${name ? ` (${name})` : ""} tersimpan.`,
+    };
+  } catch (error) {
+    console.error(
+      "corporate_robot_telegram_detect_error",
+      error instanceof Error ? error.message : "unknown error",
+    );
+    return { ok: false, message: "Telegram tidak dapat dihubungi. Coba lagi." };
+  }
+}
+
+export async function sendTestTelegram(db, env, ownerId) {
+  await ensureRobotSchema(db);
+  const settings = await getSettings(db, ownerId);
+  const result = await sendTelegram(
+    env,
+    settings,
+    `<b>Robot Corporate Engine aktif</b>\n\nTes koneksi berhasil. Target notifikasi: ${escapeHtml(
+      clean(env?.TELEGRAM_TARGET_PHONE) || DEFAULT_TELEGRAM_PHONE,
+    )}.`,
+  );
+  return {
+    ok: result.ok,
+    message: result.ok
+      ? "Tes Telegram terkirim."
+      : result.error || "Telegram belum dapat digunakan.",
+  };
+}
+
+/**
+ * Menjalankan satu batch. Satu lead diproses melewati finding, klarifikasi,
+ * dan publish sekaligus agar hasilnya langsung terlihat. `limit` membatasi
+ * jumlah lead, bukan jumlah stage.
+ */
+export async function runCorporateRobot(db, env = {}, options = {}) {
+  await ensureCorporateSchema(db);
+  await ensureRobotSchema(db);
+
+  await ensureCronOwner(db);
+  let settings = await getSettings(db, options.ownerId || "");
+  if (!settings) settings = await ensureCronOwner(db);
+  if (settings && (!settings.enabled || !settings.auto_publish)) {
+    settings = await updateRobotSettings(db, settings.owner_id, {
+      enabled: true,
+      autoPublish: true,
+    });
+  }
+  const ownerId = options.ownerId || settings?.owner_id || "";
+  const force = Boolean(options.force);
+
+  if (!force && !settings?.enabled) {
+    return {
+      skipped: true,
+      reason: "Robot sedang dijeda.",
+      checked: 0,
+      found: 0,
+      published: 0,
+      prospectAdded: 0,
+      notified: 0,
+      remaining: 0,
+      updated: [],
+      status: await getRobotStatus(db, env, ownerId),
+    };
+  }
+
+  const lock = await readMeta(db, "robot_running_at");
+  if (lock) {
+    const age = Date.now() - Date.parse(lock);
+    if (Number.isFinite(age) && age >= 0 && age < ROBOT_LOCK_MS) {
+      return {
+        skipped: true,
+        reason: "Robot sedang berjalan.",
+        checked: 0,
+        found: 0,
+        published: 0,
+        prospectAdded: 0,
+        notified: 0,
+        remaining: 0,
+        updated: [],
+        status: await getRobotStatus(db, env, ownerId),
+      };
+    }
+  }
+
+  const startedAt = nowIso();
+  const runId = crypto.randomUUID();
+  await writeMeta(db, "robot_running_at", startedAt);
+  const limit = Math.max(1, Math.min(12, Number(options.limit) || 2));
+  const concurrency = Math.max(1, Math.min(4, Number(options.concurrency) || 4));
+  let checked = 0;
+  let found = 0;
+  let published = 0;
+  let prospectAdded = 0;
+  let notified = 0;
+  let lastError = "";
+  const updated = [];
+
+  try {
+    // Kurir Telegram menjalankan pesan yang sudah siap sebelum antrean baru
+    // diproses. Ini terjadi di dalam lock robot, jadi tidak ada dua proses
+    // yang berlomba mengirim lead yang sama. Pesan tetap terkirim tanpa
+    // membuka aplikasi selama cron berjalan.
+    const preflight = await notifyPending(db, env, settings, 2).catch((error) => {
+      console.error(
+        "corporate_robot_telegram_preflight_error",
+        error instanceof Error ? error.message : "unknown error",
+      );
+      return { checked: 0, sent: 0 };
+    });
+    notified += preflight.sent;
+
+    await ensureJobs(db);
+    const rows = await db
+      .prepare(
+        `${JOB_SELECT}
+         WHERE j.next_run_at <= ?
+           AND j.stage IN ('finding', 'clarification', 'publish', 'publish_telegram', 'publish_prospect')
+         ORDER BY
+           CASE j.stage
+             WHEN 'publish' THEN 0
+             WHEN 'publish_telegram' THEN 0
+             WHEN 'publish_prospect' THEN 1
+             WHEN 'clarification' THEN 2
+             ELSE 3
+           END,
+           j.need_score DESC,
+           j.updated_at ASC
+         LIMIT ?`,
+      )
+      .bind(nowIso(), limit)
+      .all();
+
+    const processRow = async (row) => {
+      checked += 1;
+      try {
+        const result = await advanceJob(db, row, env, settings, ownerId);
+        found += result.found ? 1 : 0;
+        published += result.published;
+        prospectAdded += result.prospectAdded;
+        notified += result.notified;
+        if (result.job) updated.push(result.job);
+      } catch (error) {
+        lastError = error instanceof Error ? error.message : "Kesalahan robot.";
+        console.error("corporate_robot_job_error", lastError);
+        await updateJob(db, row.lead_id, {
+          attempts: Number(row.attempts || 0) + 1,
+          last_error: "Robot gagal memproses lead ini. Akan dicoba lagi.",
+          next_run_at: addHours(1),
+        }).catch(() => undefined);
+        const job = await readJob(db, row.lead_id).catch(() => null);
+        if (job) updated.push(job);
+      }
+    };
+
+    // Beberapa lead diproses paralel. Pekerjaan AI tetap dibatasi 3-4 lead agar
+    // tidak membanjiri penyedia riset sekaligus.
+    let cursor = 0;
+    const workers = Array.from(
+      { length: Math.min(concurrency, (rows.results ?? []).length) },
+      async () => {
+        while (cursor < (rows.results ?? []).length) {
+          const index = cursor;
+          cursor += 1;
+          await processRow((rows.results ?? [])[index]);
+        }
+      },
+    );
+    await Promise.all(workers);
+
+    const pending = await notifyPending(db, env, settings, 2);
+    notified += pending.sent;
+
+    const finishedAt = nowIso();
+    await db
+      .prepare(
+        `INSERT INTO corporate_robot_runs
+          (id, started_at, finished_at, checked, found, published, notified, error)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(runId, startedAt, finishedAt, checked, found, published, notified, lastError)
+      .run();
+    await writeMeta(db, "robot_last_run", finishedAt);
+
+    const remainingRow = await db
+      .prepare(
+        `SELECT COUNT(*) AS total
+         FROM corporate_robot_jobs j
+         JOIN corporate_leads l ON l.id = j.lead_id
+         WHERE j.stage IN ('finding', 'clarification', 'publish', 'publish_telegram', 'publish_prospect')`,
+      )
+      .first();
+
+    return {
+      skipped: false,
+      runId,
+      checked,
+      found,
+      published,
+      prospectAdded,
+      notified,
+      remaining: Number(remainingRow?.total || 0),
+      error: lastError,
+      updated,
+      status: await getRobotStatus(db, env, ownerId),
+    };
+  } finally {
+    await writeMeta(db, "robot_running_at", "").catch(() => undefined);
+  }
+}
+
+/** Dipanggil dari request GET agar pekerjaan berlanjut saat aplikasi dibuka. */
+export async function maybeRunCorporateRobot(db, env = {}) {
+  if (!db) return null;
+  try {
+    await ensureCorporateSchema(db);
+    await ensureRobotSchema(db);
+    let settings = await getSettings(db);
+    if (!settings) settings = await ensureCronOwner(db);
+    if (!settings?.enabled) return null;
+    const last = await readMeta(db, "robot_last_run");
+    if (last) {
+      const age = Date.now() - Date.parse(last);
+      if (Number.isFinite(age) && age >= 0 && age < ROBOT_INTERVAL_MS) return null;
+    }
+    return await runCorporateRobot(db, env, {
+      ownerId: settings.owner_id,
+      limit: 1,
+      source: "heartbeat",
+    });
+  } catch (error) {
+    console.error(
+      "corporate_robot_heartbeat_error",
+      error instanceof Error ? error.message : "unknown error",
+    );
+    return null;
+  }
+}

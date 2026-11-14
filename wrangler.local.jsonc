@@ -1,0 +1,37 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "quotedesk-local",
+  "main": "worker/index.js",
+  "compatibility_date": "2026-10-23",
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "run_worker_first": true,
+    "not_found_handling": "single-page-application"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "quotedesk-local",
+      "database_id": "00000000-0000-0000-0000-000000000000"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "FILES",
+      "bucket_name": "quotedesk-local"
+    }
+  ],
+  "vars": {
+    "FREEBUFF_CLIENT_ID": "b79d0190-2cf9-478a-8d6d-34d28c1b29d0",
+    "FREEBUFF_ISSUER": "https://freebuff.com/oidc",
+    "APP_ORIGIN": "http://localhost:8787"
+  },
+  "triggers": {
+    "crons": ["*/15 * * * *"]
+  },
+  "dev": {
+    "port": 8787,
+    "host": "127.0.0.1"
+  }
+}

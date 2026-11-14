@@ -1,0 +1,19 @@
+{
+  "siteId": "c18b594d-319b-4283-9820-3f22076ae9aa",
+  "name": "QuoteDesk ASNET",
+  "preview": {
+    "url": "https://site-112732548e6d4039b0803f571aea6817.freebuff.page",
+    "published": true,
+    "auth": "enabled",
+    "storage": {
+      "DB": "D1 preview (data per akun)",
+      "FILES": "R2 preview (PDF penawaran & PO)"
+    }
+  },
+  "production": {
+    "url": "https://site-574ce564a951442eb36f3021a7b9480b.freebuff.page",
+    "published": false,
+    "auth": "not enabled",
+    "storage": "not provisioned"
+  }
+}
