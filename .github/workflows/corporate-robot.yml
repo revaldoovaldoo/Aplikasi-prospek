@@ -23,8 +23,9 @@ concurrency:
 jobs:
   tick:
     runs-on: ubuntu-latest
-    # Satu lead bisa memakai beberapa detik untuk panel AI dan geocoding.
-    timeout-minutes: 3
+    # Panel AI + geocoding bisa memakan beberapa menit. Beri waktu yang cukup
+    # agar permintaan cron tidak berhenti sebelum kurir Telegram dijalankan.
+    timeout-minutes: 8
     steps:
       - name: Run one Corporate Robot batch
         run: |
@@ -37,8 +38,8 @@ jobs:
             echo "GitHub tidak memberikan OIDC token."
             exit 1
           fi
-          curl --fail --silent --show-error --max-time 120 \
+          curl --fail --silent --show-error --max-time 300 \
             -X POST "https://site-112732548e6d4039b0803f571aea6817.freebuff.page/api/corporate/robot/cron-oidc" \
             -H "Authorization: Bearer $OIDC_TOKEN" \
             -H "Content-Type: application/json" \
-            --data '{"source":"github-oidc"}'
+            --data '{"source":"github-oidc","limit":4}'
