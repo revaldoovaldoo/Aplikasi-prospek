@@ -32,16 +32,43 @@ const REGION_COORDINATES = new Map(
     },
   ]),
 );
+const DEFAULT_REGION =
+  CORPORATE_CITIES.find((city) => city.name === "Jakarta") ?? CORPORATE_CITIES[0];
 
+/** Cocokkan nama kota persis, atau nama wilayah yang menyebut kota tersebut. */
+function regionByName(value) {
+  const target = clean(value).toLowerCase();
+  if (!target) return null;
+  return (
+    CORPORATE_CITIES.find((city) => city.name.toLowerCase() === target) ||
+    CORPORATE_CITIES.find((city) => target.includes(city.name.toLowerCase())) ||
+    null
+  );
+}
+
+/**
+ * Titik pusat wilayah tidak pernah kosong: kota kosong atau di luar daftar
+ * memakai pusat wilayah default, tetap ditandai approximate agar tidak lolos
+ * gate koordinat Prospek.
+ */
 export function regionCoordinate(city, area = "") {
-  const region = REGION_COORDINATES.get(clean(city));
-  if (!region) return null;
+  const cityName = clean(city);
+  const areaName = clean(area);
+  const matched = regionByName(cityName) || regionByName(areaName);
+  const region = matched || DEFAULT_REGION;
+  const coordinate = REGION_COORDINATES.get(region.name);
+  const location = [areaName, cityName].filter(Boolean).join(", ");
   return {
-    latitude: region.latitude,
-    longitude: region.longitude,
-    coordinateAddress:
-      [clean(area), clean(city)].filter(Boolean).join(", ") || clean(city),
-    coordinateSource: `Pusat wilayah ${clean(city)}`,
+    latitude: coordinate.latitude,
+    longitude: coordinate.longitude,
+    coordinateAddress: matched
+      ? location || region.name
+      : location
+        ? `${location} (pusat wilayah ${region.name})`
+        : region.name,
+    coordinateSource: matched
+      ? `Pusat wilayah ${region.name}`
+      : `Pusat wilayah default ${region.name}`,
     approximate: true,
   };
 }
@@ -69,7 +96,7 @@ export function coordinateInRegion(city, latitude, longitude, padding = 0.08) {
   );
 }
 
-/** Koordinat entitas bila ada; jika belum, pusat wilayah lead. */
+/** Koordinat entitas bila ada; jika belum, pusat wilayah lead/default. */
 export function resolveLeadCoordinates(lead = {}) {
   const latitude = Number(lead.latitude);
   const longitude = Number(lead.longitude);
@@ -420,7 +447,10 @@ export function rowToLead(row) {
     longitude: coordinate?.longitude || 0,
     coordinateAddress:
       row.coordinate_address || coordinate?.coordinateAddress || "",
-    coordinateSource: row.coordinate_source || coordinate?.coordinateSource || "",
+    // Sumber harus mengikuti koordinat yang benar-benar dipakai. Jika titik
+    // entitas ditolak karena di luar wilayah, jangan pertahankan label
+    // "OpenStreetMap" pada titik fallback.
+    coordinateSource: coordinate?.coordinateSource || row.coordinate_source || "",
     validationStatus: row.validation_status || "",
     validationEvidence: parseJsonList(row.validation_evidence),
     validatedAt: row.validated_at || "",
@@ -512,7 +542,16 @@ export async function readCorporateLeads(db, seed) {
       leads.push(...cached);
     } else {
       for (const lead of seed.leads) {
-        if (lead.city === city.name) leads.push(lead);
+        if (lead.city !== city.name) continue;
+        const coordinate = resolveLeadCoordinates(lead);
+        leads.push({
+          ...lead,
+          latitude: coordinate.latitude,
+          longitude: coordinate.longitude,
+          coordinateAddress:
+            lead.coordinateAddress || coordinate.coordinateAddress,
+          coordinateSource: coordinate.coordinateSource,
+        });
       }
     }
     return { name: city.name, updatedAt };
@@ -1771,7 +1810,7 @@ export async function refreshCorporateCity(db, cityName, seed) {
     if (Number.isFinite(age) && age < REFRESH_MIN_MS) {
       const rows = await db
         .prepare(
-          "SELECT id, name, city, area, category, email, phone, website, contact_name, contact_role, contact_url, contact_source FROM corporate_leads WHERE city = ?",
+          `SELECT ${CORPORATE_LEAD_FIELDS} FROM corporate_leads WHERE city = ?`,
         )
         .bind(city.name)
         .all();
@@ -1788,7 +1827,7 @@ export async function refreshCorporateCity(db, cityName, seed) {
 
   const existingRows = await db
     .prepare(
-      "SELECT id, name, city, area, category, email, phone, website, contact_name, contact_role, contact_url, contact_source FROM corporate_leads WHERE city = ?",
+      `SELECT ${CORPORATE_LEAD_FIELDS} FROM corporate_leads WHERE city = ?`,
     )
     .bind(city.name)
     .all();

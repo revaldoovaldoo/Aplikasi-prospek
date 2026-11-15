@@ -11,12 +11,17 @@ import {
 import { researchCorporateLead } from "./research.js";
 import { verifyGithubOidc } from "./github-oidc.js";
 import {
+  ensureTelegramWebhook,
+  handleTelegramLeaderWebhook,
+} from "./leader.js";
+import {
   detectTelegramChat,
   ensureCronOwner,
   getCronHealth,
   getRobotStatus,
   markCronTick,
   maybeRunCorporateRobot,
+  retryStuckTelegram,
   runCorporateRobot,
   sendTestTelegram,
   updateRobotSettings,
@@ -158,6 +163,13 @@ function isValidDatabase(value) {
     ) {
       return false;
     }
+    if (
+      quote.quoteHistory !== undefined &&
+      (!Array.isArray(quote.quoteHistory) ||
+        !quote.quoteHistory.every((file) => isStoredFile(file)))
+    ) {
+      return false;
+    }
     if (quote.quoteFile !== undefined && quote.quoteFile !== null) {
       return isStoredFile(quote.quoteFile);
     }
@@ -263,17 +275,38 @@ async function handleFiles(request, env, auth) {
 
   const match = /^\/api\/files\/([0-9a-f-]{36})$/.exec(url.pathname);
   if (!match) return json({ error: "Not found" }, 404);
-  if (request.method !== "GET" && request.method !== "HEAD") {
+  if (
+    request.method !== "GET" &&
+    request.method !== "HEAD" &&
+    request.method !== "DELETE"
+  ) {
     return new Response(null, {
       status: 405,
-      headers: { Allow: "GET, HEAD", "Cache-Control": "private, no-store" },
+      headers: { Allow: "GET, HEAD, DELETE", "Cache-Control": "private, no-store" },
     });
+  }
+
+  if (request.method === "DELETE" && !isSameOriginRequest(request, env.APP_ORIGIN)) {
+    return json({ error: "Forbidden" }, 403);
   }
 
   const user = await auth.getUser(request);
   if (!user) return json({ error: "Sign in required" }, 401);
 
   const key = `${user.sub}/${match[1]}.pdf`;
+  if (request.method === "DELETE") {
+    try {
+      await env.FILES.delete(key);
+    } catch (error) {
+      console.error(
+        "file_delete_error",
+        error instanceof Error ? error.message : "unknown error",
+      );
+      return json({ error: "Gagal menghapus PDF" }, 500);
+    }
+    return json({ ok: true });
+  }
+
   let object;
   try {
     object = await env.FILES.get(key);
@@ -587,6 +620,30 @@ async function handleCorporateRobotTelegramTest(request, env, auth) {
   }
 }
 
+async function handleCorporateRobotTelegramRetry(request, env, auth) {
+  if (request.method !== "POST") {
+    return new Response(null, {
+      status: 405,
+      headers: { Allow: "POST", "Cache-Control": "private, no-store" },
+    });
+  }
+  if (!isSameOriginRequest(request, env.APP_ORIGIN)) {
+    return json({ error: "Forbidden" }, 403);
+  }
+  if (!env.DB) return json({ error: "Database belum tersedia" }, 500);
+  const user = await auth.getUser(request);
+  if (!user) return json({ error: "Sign in required" }, 401);
+  try {
+    return json(await retryStuckTelegram(env.DB, env, user.sub));
+  } catch (error) {
+    console.error(
+      "corporate_robot_telegram_retry_error",
+      error instanceof Error ? error.message : "unknown error",
+    );
+    return json({ error: "Pesan macet belum bisa dikirim ulang." }, 502);
+  }
+}
+
 async function handleCorporateRobotTelegramDetect(request, env, auth) {
   if (request.method !== "POST") {
     return new Response(null, {
@@ -625,6 +682,22 @@ async function handleCorporateRobotCronHealth(request, env) {
   }
 }
 
+async function runRobotBatchAndEnsureWebhook(db, env, options) {
+  try {
+    return await runCorporateRobot(db, env, options);
+  } finally {
+    // AI Leader memakai webhook, bukan polling. Pastikan webhook tetap
+    // terdaftar sekali meskipun batch robot melempar error. Kegagalan
+    // pendaftaran webhook tidak boleh menutupi hasil/error batch.
+    await ensureTelegramWebhook(db, env).catch((error) => {
+      console.error(
+        "ai_leader_webhook_maintenance_error",
+        error instanceof Error ? error.message : "unknown error",
+      );
+    });
+  }
+}
+
 async function handleCorporateRobotCron(request, env) {
   if (request.method !== "POST") {
     return new Response(null, {
@@ -649,7 +722,7 @@ async function handleCorporateRobotCron(request, env) {
   try {
     await markCronTick(env.DB);
     await ensureCronOwner(env.DB);
-    const result = await runCorporateRobot(env.DB, env, {
+    const result = await runRobotBatchAndEnsureWebhook(env.DB, env, {
       limit: Math.max(1, Math.min(12, Number(body?.limit) || 4)),
       force: true,
       source: "cron",
@@ -692,7 +765,7 @@ async function handleCorporateRobotCronOidc(request, env) {
     }
     await markCronTick(env.DB);
     await ensureCronOwner(env.DB);
-    const result = await runCorporateRobot(env.DB, env, {
+    const result = await runRobotBatchAndEnsureWebhook(env.DB, env, {
       limit: Math.max(1, Math.min(12, Number(body?.limit) || 4)),
       force: true,
       source: "github-oidc",
@@ -851,6 +924,9 @@ function setup(env) {
       if (url.pathname === "/api/corporate/robot/telegram/test") {
         return handleCorporateRobotTelegramTest(request, environment, auth);
       }
+      if (url.pathname === "/api/corporate/robot/telegram/retry") {
+        return handleCorporateRobotTelegramRetry(request, environment, auth);
+      }
       if (url.pathname === "/api/corporate/robot/telegram/detect") {
         return handleCorporateRobotTelegramDetect(request, environment, auth);
       }
@@ -879,11 +955,20 @@ function setup(env) {
 export default {
   async fetch(request, env, ctx) {
     try {
+      const url = new URL(request.url);
+      // Telegram memanggil endpoint ini langsung setelah update masuk.
+      // Jangan lewat auth aplikasi: autentikasi memakai secret webhook.
+      if (
+        request.method === "POST" &&
+        url.pathname === "/api/telegram/webhook"
+      ) {
+        const result = await handleTelegramLeaderWebhook(env.DB, env, request);
+        return json({ ok: result.ok }, result.status);
+      }
       // Worker hosting tidak punya proses latar terus-menerus. Heartbeat ini
       // melanjutkan antrean saat aplikasi dibuka; cron endpoint menangani
       // pemicu terjadwal ketika scheduler tersedia.
       if (ctx?.waitUntil && env.DB) {
-        const url = new URL(request.url);
         if (
           request.method === "GET" &&
           (url.pathname === "/" ||
@@ -891,6 +976,9 @@ export default {
             url.pathname === "/api/corporate/robot")
         ) {
           ctx.waitUntil(maybeRunCorporateRobot(env.DB, env));
+          if (url.pathname === "/api/corporate/robot") {
+            ctx.waitUntil(ensureTelegramWebhook(env.DB, env));
+          }
         }
       }
       return await setup(env)(request, env);
@@ -908,7 +996,7 @@ export default {
     try {
       await markCronTick(env.DB);
       await ensureCronOwner(env.DB);
-      await runCorporateRobot(env.DB, env, {
+      await runRobotBatchAndEnsureWebhook(env.DB, env, {
         limit: 3,
         force: false,
         source: "cron",

@@ -378,6 +378,38 @@ export async function testCorporateRobotTelegram(): Promise<{ ok: boolean; messa
   };
 }
 
+export async function retryCorporateRobotTelegram(): Promise<{
+  ok: boolean;
+  requeued: number;
+  sent: number;
+  message: string;
+}> {
+  const response = await fetch("/api/corporate/robot/telegram/retry", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+  });
+  const body = await readJson(response);
+  if (!response.ok) {
+    throw new ApiError(
+      response.status,
+      response.status === 401
+        ? "Sesi berakhir."
+        : robotErrorMessage(body, "Pesan macet belum bisa dikirim ulang."),
+    );
+  }
+  return {
+    ok: Boolean(body?.ok),
+    requeued: Number(body?.requeued || 0),
+    sent: Number(body?.sent || 0),
+    message:
+      typeof body?.message === "string"
+        ? body.message
+        : "Pesan macet selesai diproses.",
+  };
+}
+
 export function pdfUrl(fileId: string): string {
   return `/api/files/${encodeURIComponent(fileId)}`;
 }
@@ -419,6 +451,22 @@ export async function uploadPdf(file: File): Promise<StoredFile> {
     throw new ApiError(500, "Respons unggahan tidak dikenali.");
   }
   return uploaded;
+}
+
+export async function deletePdf(fileId: string): Promise<void> {
+  const response = await fetch(pdfUrl(fileId), {
+    method: "DELETE",
+    credentials: "same-origin",
+    headers: { Accept: "application/json" },
+  });
+  if (!response.ok) {
+    throw new ApiError(
+      response.status,
+      response.status === 401
+        ? "Sesi berakhir. Silakan masuk lagi."
+        : "Gagal menghapus file PDF.",
+    );
+  }
 }
 
 export async function pushState(data: Database, baseRevision: number): Promise<SaveResult> {

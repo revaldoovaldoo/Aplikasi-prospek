@@ -7,6 +7,7 @@ import {
   formatIDR,
   formatShortDate,
   formatYears,
+  quoteFiles,
   type CompanyStatus,
 } from "../lib/data";
 import { downloadUrl, pdfUrl } from "../lib/api";
@@ -43,6 +44,7 @@ interface Props {
   onOpenBast: (quote: QuoteRecord) => void;
   onUploadSignedBast: (quote: QuoteRecord) => void;
   onDelete: (company: Company) => void;
+  onDeleteQuoteFile: (company: Company, quote: QuoteRecord, file: StoredFile) => void;
   onCreateQuote: (companyId: string) => void;
 }
 
@@ -50,10 +52,12 @@ function FileRow({
   label,
   file,
   onPrint,
+  onDelete,
 }: {
   label: string;
   file: StoredFile;
   onPrint: (file: StoredFile, label: string) => void;
+  onDelete?: () => void;
 }) {
   return (
     <div className="drawer-file">
@@ -87,6 +91,17 @@ function FileRow({
         >
           <PrinterIcon size={16} />
         </button>
+        {onDelete ? (
+          <button
+            type="button"
+            className="drawer-file-action drawer-file-delete"
+            onClick={onDelete}
+            aria-label={`Hapus ${label}`}
+            title="Hapus PDF"
+          >
+            <TrashIcon size={16} />
+          </button>
+        ) : null}
       </div>
     </div>
   );
@@ -103,6 +118,7 @@ export default function CompanyDrawer({
   onOpenBast,
   onUploadSignedBast,
   onDelete,
+  onDeleteQuoteFile,
   onCreateQuote,
 }: Props) {
   const [printTarget, setPrintTarget] = useState<{ file: StoredFile; label: string } | null>(null);
@@ -138,6 +154,7 @@ export default function CompanyDrawer({
 
   const poStage =
     status === "po" || status === "bast-terkirim" || status === "bast-selesai";
+  const quotePdfs = quote ? quoteFiles(quote) : [];
 
   return createPortal(
     <>
@@ -319,11 +336,25 @@ export default function CompanyDrawer({
                 <span className="quote-card-date">{formatShortDate(quote.date)}</span>
               </div>
 
-              <FileRow
-                label="PDF penawaran"
-                file={quote.quoteFile}
-                onPrint={(file, label) => setPrintTarget({ file, label })}
-              />
+              <div className="quote-file-list">
+                <div className="quote-file-list-head">
+                  <span>Semua PDF penawaran</span>
+                  <strong>{quotePdfs.length} file</strong>
+                </div>
+                {quotePdfs.map((saved, index) => (
+                  <FileRow
+                    key={saved.id}
+                    label={
+                      index === 0
+                        ? "PDF penawaran terbaru"
+                        : `PDF penawaran versi ${quotePdfs.length - index}`
+                    }
+                    file={saved}
+                    onPrint={(file, label) => setPrintTarget({ file, label })}
+                    onDelete={() => onDeleteQuoteFile(company, quote, saved)}
+                  />
+                ))}
+              </div>
 
               <div className="quote-actions">
                 <button
@@ -331,8 +362,17 @@ export default function CompanyDrawer({
                   className="btn btn-secondary"
                   onClick={() => onCreateQuote(company.id)}
                 >
-                  <FileIcon size={15} /> Buat penawaran baru
+                  <FileIcon size={15} /> Buat ulang PDF penawaran
                 </button>
+                {status !== "tidak-jadi" ? (
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={() => onUploadQuote(company.id)}
+                  >
+                    <UploadIcon size={15} /> Perbarui PDF penawaran
+                  </button>
+                ) : null}
               </div>
 
               {status === "tidak-jadi" ? (
@@ -484,15 +524,7 @@ export default function CompanyDrawer({
                     <AlertIcon size={15} /> Cancel
                   </button>
                 ) : null}
-                {status === "penawaran" ? (
-                  <button
-                    type="button"
-                    className="link-btn quote-replace"
-                    onClick={() => onUploadQuote(company.id)}
-                  >
-                    Ganti PDF penawaran
-                  </button>
-                ) : null}
+
               </div>
             </div>
           )}

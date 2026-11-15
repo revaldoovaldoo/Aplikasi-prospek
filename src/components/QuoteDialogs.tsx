@@ -1,18 +1,24 @@
 import { useEffect, useRef, useState } from "react";
 import type { Company, QuoteRecord, StoredFile } from "../types";
 import {
+  autoQuoteNumber,
   commissionOf,
   formatFileSize,
   formatIDR,
   formatShortDate,
+  isQuoteSequenceUsed,
+  nextAvailableQuoteNumber,
   parseAmount,
   ppnOf,
+  quoteFiles,
+  quoteSequence,
   todayISO,
+  yearOf,
 } from "../lib/data";
-import { MAX_PDF_BYTES, uploadPdf } from "../lib/api";
+import { MAX_PDF_BYTES, pdfUrl, uploadPdf } from "../lib/api";
 import { extractQuoteNumber } from "../lib/pdf";
 import { Modal } from "./Dialogs";
-import { AlertIcon, FileIcon, UploadIcon } from "./icons";
+import { AlertIcon, DownloadIcon, FileIcon, TrashIcon, UploadIcon } from "./icons";
 
 function validatePdf(file: File): string | null {
   const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
@@ -102,6 +108,7 @@ interface QuoteUploadProps {
   open: boolean;
   company: Company | null;
   existing: QuoteRecord | null;
+  quotes: QuoteRecord[];
   onClose: () => void;
   onSave: (input: {
     companyId: string;
@@ -109,9 +116,18 @@ interface QuoteUploadProps {
     date: string;
     quoteFile: StoredFile;
   }) => void;
+  onDeleteVersion: (file: StoredFile) => void;
 }
 
-export function QuoteUploadDialog({ open, company, existing, onClose, onSave }: QuoteUploadProps) {
+export function QuoteUploadDialog({
+  open,
+  company,
+  existing,
+  quotes,
+  onClose,
+  onSave,
+  onDeleteVersion,
+}: QuoteUploadProps) {
   const [file, setFile] = useState<File | null>(null);
   const [number, setNumber] = useState("");
   const [date, setDate] = useState(todayISO());
@@ -119,12 +135,14 @@ export function QuoteUploadDialog({ open, company, existing, onClose, onSave }: 
   const [busy, setBusy] = useState(false);
   const [reading, setReading] = useState(false);
   const [detected, setDetected] = useState(false);
+  const existingFiles = existing ? quoteFiles(existing) : [];
 
   useEffect(() => {
     if (!open) return;
+    const today = todayISO();
     setFile(null);
-    setNumber(existing?.number ?? "");
-    setDate(existing?.date ?? todayISO());
+    setNumber(existing?.number ?? nextAvailableQuoteNumber(quotes, today));
+    setDate(existing?.date ?? today);
     setError("");
     setBusy(false);
     setReading(false);
@@ -147,13 +165,24 @@ export function QuoteUploadDialog({ open, company, existing, onClose, onSave }: 
     }
     setFile(next);
 
-    if (!number.trim()) {
+    if (!existing) {
       setReading(true);
       const found = await extractQuoteNumber(next);
       setReading(false);
-      if (found) {
-        setNumber(found);
+      const foundSequence = quoteSequence(found || "");
+      const foundYear = Number(/(\d{4})\s*$/.exec(found || "")?.[1] || 0);
+      const usable =
+        Boolean(found) &&
+        foundSequence > 0 &&
+        foundYear === yearOf(date) &&
+        !isQuoteSequenceUsed(quotes, foundSequence, date);
+      if (usable && found) {
+        // Pakai nomor urut dari PDF, tetapi bulan/tahun mengikuti tanggal
+        // penawaran yang dipilih agar seri tetap konsisten.
+        setNumber(autoQuoteNumber(foundSequence, date));
         setDetected(true);
+      } else {
+        setNumber(nextAvailableQuoteNumber(quotes, date));
       }
     }
   };
@@ -213,6 +242,55 @@ export function QuoteUploadDialog({ open, company, existing, onClose, onSave }: 
         </>
       }
     >
+      {existing && existingFiles.length > 0 ? (
+        <div className="quote-version-list">
+          <div className="quote-version-head">
+            <strong>PDF penawaran tersimpan ({existingFiles.length})</strong>
+            <span>Nomor <span className="mono">{existing.number}</span> dipakai untuk semua versi; tanggal mengikuti input terbaru.</span>
+          </div>
+          {existingFiles.map((saved, index) => (
+            <div className="quote-version-row" key={saved.id}>
+              <a
+                className="quote-version-main"
+                href={pdfUrl(saved.id)}
+                target="_blank"
+                rel="noreferrer"
+              >
+                <FileIcon size={16} />
+                <span>
+                  <strong>{index === 0 ? "Versi terbaru" : `Versi ${existingFiles.length - index}`} · {saved.name}</strong>
+                  <span>{formatFileSize(saved.size)} · {formatShortDate(saved.uploadedAt.slice(0, 10))}</span>
+                </span>
+              </a>
+              <div className="quote-version-actions">
+                <a
+                  className="drawer-file-action"
+                  href={pdfUrl(saved.id)}
+                  target="_blank"
+                  rel="noreferrer"
+                  aria-label={`Buka ${saved.name}`}
+                  title="Buka PDF"
+                >
+                  <DownloadIcon size={15} />
+                </a>
+                <button
+                  type="button"
+                  className="drawer-file-action"
+                  onClick={() => onDeleteVersion(saved)}
+                  aria-label={`Hapus ${saved.name}`}
+                  title="Hapus PDF"
+                >
+                  <TrashIcon size={15} />
+                </button>
+              </div>
+            </div>
+          ))}
+          <p className="field-hint">
+            Unggah PDF baru di bawah untuk menggantikan versi terbaru. Nomor penawaran tetap sama; tanggal dapat Anda sesuaikan. Setelah disimpan, Anda langsung masuk ke proses kirim.
+          </p>
+        </div>
+      ) : null}
+
       <div className="form-grid">
         <div className="field field-full">
           <label>File PDF penawaran</label>
@@ -221,9 +299,11 @@ export function QuoteUploadDialog({ open, company, existing, onClose, onSave }: 
             <span className="field-hint">
               {reading
                 ? "Membaca nomor penawaran dari PDF…"
-                : detected
-                  ? "Nomor terdeteksi otomatis dari PDF. Periksa dan koreksi bila perlu."
-                  : "Nomor bisa Anda isi manual di bawah."}
+                : existing
+                  ? "PDF ini akan menjadi versi terbaru; PDF sebelumnya tetap tersimpan di riwayat."
+                  : detected
+                    ? "Nomor terdeteksi otomatis dari PDF. Periksa dan koreksi bila perlu."
+                    : "Nomor diisi otomatis dari nomor urut yang masih tersedia."}
             </span>
           ) : null}
         </div>
@@ -238,8 +318,13 @@ export function QuoteUploadDialog({ open, company, existing, onClose, onSave }: 
               setNumber(event.target.value);
               setDetected(false);
             }}
-            disabled={busy}
+            disabled={busy || Boolean(existing)}
           />
+          {existing ? (
+            <span className="field-hint">
+              Nomor dikunci agar PDF pengganti tetap memakai seri penawaran yang sama.
+            </span>
+          ) : null}
         </div>
 
         <div className="field">
@@ -248,9 +333,20 @@ export function QuoteUploadDialog({ open, company, existing, onClose, onSave }: 
             id="quote-date"
             type="date"
             value={date}
-            onChange={(event) => setDate(event.target.value)}
+            onChange={(event) => {
+              const nextDate = event.target.value;
+              setDate(nextDate);
+              if (!existing && !detected) {
+                setNumber(nextAvailableQuoteNumber(quotes, nextDate));
+              }
+            }}
             disabled={busy}
           />
+          {existing ? (
+            <span className="field-hint">
+              Tanggal ini dipakai pada penawaran dan proses pengiriman berikutnya.
+            </span>
+          ) : null}
         </div>
       </div>
       {error ? <p className="form-error">{error}</p> : null}

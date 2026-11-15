@@ -10,6 +10,7 @@ import {
 import {
   detectCorporateRobotTelegram,
   fetchCorporateRobot,
+  retryCorporateRobotTelegram,
   saveCorporateRobotSettings,
   searchCorporateLead,
   testCorporateRobotTelegram,
@@ -50,6 +51,45 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Terjadi kesalahan.";
 }
 
+function RobotJobRow({
+  job,
+  onOpenLead,
+}: {
+  job: CorporateRobotJob;
+  onOpenLead: (lead: CorporateLead, evidence?: string[]) => void;
+}) {
+  const lead = job.lead;
+  return (
+    <button
+      type="button"
+      className="robot-job"
+      onClick={() => onOpenLead(lead, job.needEvidence)}
+      title={job.lastError || "Buka detail lead dan jejak agen"}
+    >
+      <span
+        className={`robot-score ${
+          job.needScore >= 58 ? "high" : job.needScore >= 42 ? "mid" : "low"
+        }`}
+      >
+        {job.needScore}
+      </span>
+      <span className="robot-job-main">
+        <strong>{lead.name}</strong>
+        <small>
+          {categoryLabel(lead.category)} · {lead.area ? `${lead.area}, ` : ""}
+          {lead.city} · {robotStageLabel(job.stage)}
+        </small>
+      </span>
+      <span className="robot-job-contact">
+        {lead.contactName || lead.email || "Kontak belum ada"}
+      </span>
+      <span className={`robot-pill ${job.contactStatus}`}>
+        {robotContactLabel(job)}
+      </span>
+    </button>
+  );
+}
+
 interface RobotPanelProps {
   companies: Company[];
   status: CorporateRobotStatus | null;
@@ -62,6 +102,7 @@ interface RobotPanelProps {
   onSaveChatId: () => void;
   onDetectChatId: () => void;
   onTestTelegram: () => void;
+  onRetryTelegram: () => void;
   onOpenLead: (lead: CorporateLead, evidence?: string[]) => void;
 }
 
@@ -77,6 +118,7 @@ function RobotPanel({
   onSaveChatId,
   onDetectChatId,
   onTestTelegram,
+  onRetryTelegram,
   onOpenLead,
 }: RobotPanelProps) {
   const stats = status?.stats;
@@ -84,6 +126,33 @@ function RobotPanel({
   // Lead yang sudah masuk Prospek tidak perlu memenuhi daftar pekerjaan robot.
   const jobs = allJobs.filter((job) => !findCompanyForLead(job.lead, companies));
   const hiddenJobCount = allJobs.length - jobs.length;
+  const jobTeams = [
+    {
+      key: "finding",
+      label: "Finding",
+      empty: "Belum ada perusahaan yang sedang diproses Finding.",
+      jobs: jobs.filter((job) => job.stage === "finding"),
+    },
+    {
+      key: "clarification",
+      label: "Klarifikasi",
+      empty: "Belum ada perusahaan yang sedang diproses Klarifikasi.",
+      jobs: jobs.filter(
+        (job) => job.stage === "clarification" || job.stage === "paused",
+      ),
+    },
+    {
+      key: "publish",
+      label: "Publish",
+      empty: "Belum ada perusahaan yang sedang diproses Publish.",
+      jobs: jobs.filter(
+        (job) =>
+          job.stage === "publish" ||
+          job.stage === "publish_telegram" ||
+          job.stage === "publish_prospect",
+      ),
+    },
+  ];
   const enabled = Boolean(status?.enabled);
   const activeCount =
     stats?.active ??
@@ -117,28 +186,67 @@ function RobotPanel({
         </div>
       </div>
 
-      <div className="robot-stages">
+      <div className="robot-leader">
+        <span className="robot-leader-badge">AI Leader</span>
+        <div>
+          <strong>AI Leader memantau Finding, Klarifikasi, dan Publish</strong>
+          <span>
+            Tanyakan progress tim, jumlah prospek, atau status penawaran lewat
+            pesan Telegram ke bot ini. Ketik <code>kirim ulang pesan macet</code>{" "}
+            untuk mengirim ulang pesan failed/needs_review yang aman. Pesan
+            uncertain tidak disertakan agar tidak terjadi duplikat.
+          </span>
+        </div>
+      </div>
+
+      <div className="robot-results-head">
+        <h3>Progress per tim</h3>
+        <span className="robot-auto-publish">
+          <CheckIcon size={14} /> Finding → Klarifikasi → Publish
+        </span>
+      </div>
+      <div className="robot-stages robot-team-progress">
         <div className="robot-stage">
           <span className="robot-stage-index">1</span>
           <div>
             <strong>Finding · 3 agen</strong>
-            <span>Profil Entitas, Sinyal Publik, Penilai Kebutuhan.</span>
+            <span>
+              {stats?.searches ?? 0} pencarian Corporate Engine ·{" "}
+              {stats?.finding ?? 0} sedang diproses.
+            </span>
           </div>
-          <b>{stats?.finding ?? 0}</b>
+          <b>{stats?.searches ?? 0}</b>
         </div>
         <div className="robot-stage">
           <span className="robot-stage-index">2</span>
           <div>
             <strong>Klarifikasi · 4 agen</strong>
-            <span>Scout, Contact Finder, Verifier, dan OpenOSINT.</span>
+            <span>
+              Scout, Contact Finder, Verifier, OpenOSINT ·{" "}
+              {stats?.clarification ?? 0} sedang diklarifikasi.
+            </span>
           </div>
           <b>{stats?.clarification ?? 0}</b>
         </div>
         <div className="robot-stage">
           <span className="robot-stage-index">3</span>
           <div>
-            <strong>Publish · 2 agen</strong>
-            <span>Dua stage terpisah: Kurir Telegram, lalu Penulis Prospek.</span>
+            <strong>Publish · Telegram</strong>
+            <span>
+              Kurir Telegram · {stats?.notified ?? 0} terkirim ·{" "}
+              {stats?.publishTelegram ?? 0} antre.
+            </span>
+          </div>
+          <b>{stats?.notified ?? 0}</b>
+        </div>
+        <div className="robot-stage">
+          <span className="robot-stage-index">4</span>
+          <div>
+            <strong>Publish · Prospek</strong>
+            <span>
+              Penulis Prospek · {stats?.published ?? 0} masuk ·{" "}
+              {stats?.publishProspect ?? 0} antre.
+            </span>
           </div>
           <b>{stats?.published ?? 0}</b>
         </div>
@@ -230,6 +338,28 @@ function RobotPanel({
           {error}
         </div>
       ) : null}
+      {(status?.outbox?.attention ?? 0) > 0 ? (
+        <div className="robot-banner robot-banner-warning" role="status">
+          <span>
+            Telegram: {status?.outbox?.failed ?? 0} gagal,{" "}
+            {status?.outbox?.uncertain ?? 0} tidak pasti,{" "}
+            {status?.outbox?.needsReview ?? 0} perlu dicek.{" "}
+            Pesan gagal dicoba ulang otomatis. Pesan tidak pasti tidak dikirim
+            ulang otomatis agar tidak dobel; pesan yang aman dapat dikirim ulang
+            manual.
+          </span>
+          {(status?.outbox?.retryable ?? 0) > 0 ? (
+            <button
+              type="button"
+              className="link-btn"
+              onClick={onRetryTelegram}
+              disabled={busy === "telegram"}
+            >
+              {busy === "telegram" ? "Mengirim…" : "Kirim ulang"}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
 
       {!status?.telegramConfigured ? (
         <div className="robot-setup">
@@ -318,7 +448,7 @@ function RobotPanel({
       <div className="robot-results-head">
         <h3>Pekerjaan robot</h3>
         <span className="robot-auto-publish">
-          <CheckIcon size={14} /> Auto Prospek setelah validasi
+          <CheckIcon size={14} /> Nama perusahaan/sekolah/hotel per tim
         </span>
       </div>
 
@@ -332,40 +462,28 @@ function RobotPanel({
           </span>
         </div>
       ) : (
-        <div className="robot-jobs">
-          {jobs.map((job) => {
-            const lead = job.lead;
-            return (
-              <button
-                key={lead.id}
-                type="button"
-                className="robot-job"
-                onClick={() => onOpenLead(lead, job.needEvidence)}
-                title={job.lastError || "Buka detail lead dan jejak 3 agen Finding"}
-              >
-                <span
-                  className={`robot-score ${
-                    job.needScore >= 58 ? "high" : job.needScore >= 42 ? "mid" : "low"
-                  }`}
-                >
-                  {job.needScore}
-                </span>
-                <span className="robot-job-main">
-                  <strong>{lead.name}</strong>
-                  <small>
-                    {categoryLabel(lead.category)} · {lead.area ? `${lead.area}, ` : ""}
-                    {lead.city}
-                  </small>
-                </span>
-                <span className="robot-job-contact">
-                  {lead.contactName || lead.email || "Kontak belum ada"}
-                </span>
-                <span className={`robot-pill ${job.contactStatus}`}>
-                  {robotContactLabel(job)}
-                </span>
-              </button>
-            );
-          })}
+        <div className="robot-job-teams">
+          {jobTeams.map((team) => (
+            <section className={`robot-job-team robot-job-team-${team.key}`} key={team.key}>
+              <div className="robot-job-team-head">
+                <h4>{team.label}</h4>
+                <span>{team.jobs.length} nama</span>
+              </div>
+              {team.jobs.length === 0 ? (
+                <p className="robot-job-team-empty">{team.empty}</p>
+              ) : (
+                <div className="robot-jobs robot-jobs-team">
+                  {team.jobs.map((job) => (
+                    <RobotJobRow
+                      key={job.lead.id}
+                      job={job}
+                      onOpenLead={onOpenLead}
+                    />
+                  ))}
+                </div>
+              )}
+            </section>
+          ))}
         </div>
       )}
 
@@ -484,6 +602,22 @@ export default function RobotPage({
     }
   }
 
+  async function retryRobotTelegram() {
+    setBusy("telegram");
+    setError("");
+    setNotice("");
+    try {
+      const result = await retryCorporateRobotTelegram();
+      if (result.ok) setNotice(result.message);
+      else setError(result.message);
+      await loadRobot();
+    } catch (telegramError) {
+      setError(errorMessage(telegramError));
+    } finally {
+      setBusy("");
+    }
+  }
+
   async function runLeadSearch(lead: CorporateLead) {
     setLeadSearching(true);
     setLeadError("");
@@ -584,6 +718,7 @@ export default function RobotPage({
         onSaveChatId={() => void saveRobotChatId()}
         onDetectChatId={() => void detectRobotChatId()}
         onTestTelegram={() => void testRobotTelegram()}
+        onRetryTelegram={() => void retryRobotTelegram()}
         onOpenLead={openLead}
       />
 

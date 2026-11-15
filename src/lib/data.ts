@@ -77,6 +77,67 @@ export function uploadedQuotes(quotes: QuoteRecord[]): QuoteRecord[] {
   return quotes.filter((quote) => isStoredFile(quote.quoteFile));
 }
 
+/** Semua PDF penawaran satu record: versi terbaru lebih dulu. */
+export function quoteFiles(quote: QuoteRecord): StoredFile[] {
+  const history = Array.isArray(quote.quoteHistory) ? quote.quoteHistory.slice().reverse() : [];
+  const files = [quote.quoteFile, ...history].filter(isStoredFile);
+  const seen = new Set<string>();
+  return files.filter((file) => {
+    if (seen.has(file.id)) return false;
+    seen.add(file.id);
+    return true;
+  });
+}
+
+export function quoteSequence(number: string): number {
+  const match = /^(\d{1,4})\s*\//.exec(String(number || "").trim());
+  return match ? Number(match[1]) : 0;
+}
+
+/**
+ * Nomor berikutnya mengikuti nomor aktif tertinggi + 1, sehingga celah dari
+ * penawaran yang dihapus tidak dipakai ulang. Nomor penawaran yang di-cancel
+ * tetap tersedia dan dipakai lebih dulu; urutan berlanjut lintas bulan/tahun.
+ */
+export function nextAvailableQuoteSequence(
+  quotes: QuoteRecord[],
+  _date: string,
+): number {
+  const sequences = quotes
+    .map((quote) => ({
+      sequence: quoteSequence(quote.number),
+      cancelled: quote.status === "tidak-jadi",
+    }))
+    .filter((item) => item.sequence > 0);
+  const active = new Set(
+    sequences.filter((item) => !item.cancelled).map((item) => item.sequence),
+  );
+  const reusable = sequences
+    .filter((item) => item.cancelled && !active.has(item.sequence))
+    .map((item) => item.sequence);
+  if (reusable.length > 0) return Math.min(...reusable);
+  if (active.size === 0) return 1;
+  return Math.max(...active) + 1;
+}
+
+export function isQuoteSequenceUsed(
+  quotes: QuoteRecord[],
+  sequence: number,
+  _date: string,
+): boolean {
+  return quotes.some(
+    (quote) =>
+      quote.status !== "tidak-jadi" && quoteSequence(quote.number) === sequence,
+  );
+}
+
+export function nextAvailableQuoteNumber(
+  quotes: QuoteRecord[],
+  date: string,
+): string {
+  return autoQuoteNumber(nextAvailableQuoteSequence(quotes, date), date);
+}
+
 export function latestQuoteForCompany(
   quotes: QuoteRecord[],
   companyId: string,
@@ -234,6 +295,7 @@ export function makeQuoteRecord(input: {
     number: input.number,
     date: input.date,
     quoteFile: input.quoteFile,
+    quoteHistory: [],
     status: "penawaran",
     lostReason: "",
     lostAt: "",

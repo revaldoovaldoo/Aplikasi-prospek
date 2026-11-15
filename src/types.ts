@@ -107,6 +107,8 @@ export interface QuoteRecord {
   number: string;
   date: string; // yyyy-mm-dd
   quoteFile: StoredFile;
+  /** PDF versi lama yang pernah dipakai; versi terbaru ada di quoteFile. */
+  quoteHistory?: StoredFile[];
   status: QuoteStatus;
   lostReason: string;
   lostAt: string; // yyyy-mm-dd, "" bila belum

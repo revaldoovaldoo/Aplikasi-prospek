@@ -175,6 +175,9 @@ const ROBOT_SCHEMA_SQL = [
     sent_at TEXT NOT NULL DEFAULT '',
     telegram_message_id TEXT NOT NULL DEFAULT '',
     last_error TEXT NOT NULL DEFAULT '',
+    next_attempt_at TEXT NOT NULL DEFAULT '',
+    last_attempt_at TEXT NOT NULL DEFAULT '',
+    review_reason TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     UNIQUE (lead_id, message_type)
@@ -217,6 +220,29 @@ export async function ensureRobotSchema(db) {
       for (const sql of ROBOT_SCHEMA_SQL) {
         await db.prepare(sql).run();
       }
+      // Migrasi tanpa menghapus outbox lama. Database yang dibuat sebelum
+      // mekanisme retry belum memiliki dua kolom ini.
+      for (const column of [
+        "next_attempt_at TEXT NOT NULL DEFAULT ''",
+        "last_attempt_at TEXT NOT NULL DEFAULT ''",
+        "review_reason TEXT NOT NULL DEFAULT ''",
+      ]) {
+        try {
+          await db
+            .prepare(
+              `ALTER TABLE corporate_telegram_outbox ADD COLUMN ${column}`,
+            )
+            .run();
+        } catch {
+          /* kolom sudah ada */
+        }
+      }
+      await db
+        .prepare(
+          `CREATE INDEX IF NOT EXISTS corporate_telegram_outbox_retry
+           ON corporate_telegram_outbox (status, next_attempt_at, created_at)`,
+        )
+        .run();
     })().catch((error) => {
       robotSchemaPromise = undefined;
       throw error;
@@ -690,7 +716,7 @@ function telegramConfig(env, settings) {
   };
 }
 
-async function sendTelegram(env, settings, text) {
+export async function sendTelegram(env, settings, text, options = {}) {
   const config = telegramConfig(env, settings);
   if (!config.token) {
     return { ok: false, configured: false, error: "TELEGRAM_BOT_TOKEN belum diatur." };
@@ -707,7 +733,7 @@ async function sendTelegram(env, settings, text) {
         body: JSON.stringify({
           chat_id: config.chatId,
           text,
-          parse_mode: "HTML",
+          ...(options.parseMode === "plain" ? {} : { parse_mode: "HTML" }),
           disable_web_page_preview: true,
         }),
         signal: AbortSignal.timeout(12_000),
@@ -749,6 +775,113 @@ async function sendTelegram(env, settings, text) {
 
 const TELEGRAM_PLACEHOLDER = "Belum tersedia";
 const TELEGRAM_MESSAGE_TYPE = "lead_ready";
+// Kurir Telegram tidak memakai kuota harian. Batas per batch hanya menjaga
+// waktu respons Worker; sisa antrean dikirim pada batch cron berikutnya.
+const TELEGRAM_BATCH_LIMIT = 10;
+const TELEGRAM_MAX_ATTEMPTS = 8;
+const TELEGRAM_RETRY_BASE_MS = 5 * 60 * 1000;
+const TELEGRAM_RETRY_MAX_MS = 6 * 60 * 60 * 1000;
+const TELEGRAM_SENDING_STALE_MS = 15 * 60 * 1000;
+const TELEGRAM_UNCERTAIN_REVIEW_MS = 60 * 60 * 1000;
+const TELEGRAM_REVIEW_BATCH_LIMIT = 10;
+
+function retryDelayMs(attempts) {
+  const exponent = Math.max(0, Math.min(6, Number(attempts || 1) - 1));
+  return Math.min(TELEGRAM_RETRY_MAX_MS, TELEGRAM_RETRY_BASE_MS * 2 ** exponent);
+}
+
+/**
+ * Menandai baris yang tidak mungkin dikirim lagi tanpa keputusan manusia.
+ * `sending` yang tertinggal berarti Worker berhenti setelah klaim; hasilnya
+ * tidak pasti, jadi jangan dikirim ulang otomatis (bisa duplikat). Setelah
+ * tenggat, pesan masuk `needs_review` agar tidak menggantung selamanya.
+ */
+export async function reconcileTelegramOutbox(db, now = Date.now()) {
+  const nowAt = new Date(now).toISOString();
+  const sendingCutoff = new Date(now - TELEGRAM_SENDING_STALE_MS).toISOString();
+  const uncertainCutoff = new Date(
+    now - TELEGRAM_UNCERTAIN_REVIEW_MS,
+  ).toISOString();
+  await db
+    .prepare(
+      `UPDATE corporate_telegram_outbox
+       SET status = 'uncertain', claimed_at = '', next_attempt_at = '',
+           review_reason = 'uncertain',
+           last_error = CASE WHEN last_error = '' THEN ? ELSE last_error END,
+           updated_at = ?
+       WHERE status = 'sending'
+         AND (claimed_at = '' OR claimed_at < ?)`,
+    )
+    .bind(
+      "Pengiriman terputus sebelum hasil diterima; status belum pasti.",
+      nowAt,
+      sendingCutoff,
+    )
+    .run();
+  await db
+    .prepare(
+      `UPDATE corporate_telegram_outbox
+       SET status = 'needs_review', claimed_at = '', next_attempt_at = '',
+           review_reason = 'uncertain',
+           last_error = CASE WHEN last_error = ''
+             THEN 'Status pengiriman tidak pasti; perlu dicek atau dikirim ulang manual.'
+             ELSE last_error END,
+           updated_at = ?
+       WHERE status = 'uncertain' AND updated_at < ?`,
+    )
+    .bind(nowAt, uncertainCutoff)
+    .run();
+  await db
+    .prepare(
+      `UPDATE corporate_telegram_outbox
+       SET status = 'needs_review', claimed_at = '', next_attempt_at = '',
+           review_reason = 'failed',
+           last_error = CASE WHEN last_error = ''
+             THEN 'Batas percobaan habis; perlu dicek atau dikirim ulang manual.'
+             ELSE last_error END,
+           updated_at = ?
+       WHERE status = 'failed' AND attempts >= ?`,
+    )
+    .bind(nowAt, TELEGRAM_MAX_ATTEMPTS)
+    .run();
+}
+
+export async function readTelegramOutboxHealth(db) {
+  const rows = await db
+    .prepare(
+      "SELECT status, review_reason, COUNT(*) AS total FROM corporate_telegram_outbox GROUP BY status, review_reason",
+    )
+    .all();
+  const health = {
+    pending: 0,
+    sending: 0,
+    sent: 0,
+    failed: 0,
+    uncertain: 0,
+    needsReview: 0,
+    retryable: 0,
+    total: 0,
+    attention: 0,
+  };
+  for (const row of rows.results ?? []) {
+    const total = Number(row.total || 0);
+    const status = String(row.status || "");
+    const reason = String(row.review_reason || "");
+    health.total += total;
+    if (status === "needs_review") {
+      health.needsReview += total;
+      if (["failed", "invalid", ""].includes(reason)) health.retryable += total;
+    } else if (status === "failed") {
+      health.failed += total;
+      health.retryable += total;
+    } else if (status in health) {
+      health[status] += total;
+    }
+  }
+  health.attention =
+    health.failed + health.uncertain + health.needsReview + health.sending;
+  return health;
+}
 
 function telegramOutboxId(leadId, messageType = TELEGRAM_MESSAGE_TYPE) {
   return `${leadId}:${messageType}`;
@@ -800,10 +933,11 @@ async function flushTelegramOutbox(db, env, settings, limit = 2, onlyId = "") {
   const config = telegramConfig(env, settings);
   if (!config.configured) return { checked: 0, sent: 0, items: [] };
 
+  const dueAt = nowIso();
   const where = onlyId
     ? "o.id = ?"
-    : "o.status IN ('pending', 'failed')";
-  const bindings = onlyId ? [onlyId] : [];
+    : "o.status IN ('pending', 'failed') AND (o.next_attempt_at = '' OR o.next_attempt_at <= ?)";
+  const bindings = onlyId ? [onlyId] : [dueAt];
   const rows = await db
     .prepare(
       `SELECT o.id AS outbox_id, o.lead_id AS outbox_lead_id,
@@ -813,7 +947,8 @@ async function flushTelegramOutbox(db, env, settings, limit = 2, onlyId = "") {
        FROM corporate_telegram_outbox o
        JOIN corporate_leads l ON l.id = o.lead_id
        WHERE ${where}
-       ORDER BY o.created_at ASC
+       ORDER BY CASE o.status WHEN 'pending' THEN 0 ELSE 1 END,
+                o.created_at ASC
        LIMIT ?`,
     )
     .bind(...bindings, limit)
@@ -841,10 +976,11 @@ async function flushTelegramOutbox(db, env, settings, limit = 2, onlyId = "") {
       .prepare(
         `UPDATE corporate_telegram_outbox
          SET status = 'sending', attempts = attempts + 1,
-             claimed_at = ?, updated_at = ?
+             claimed_at = ?, last_attempt_at = ?, next_attempt_at = '',
+             updated_at = ?
          WHERE id = ? AND status IN ('pending', 'failed')`,
       )
-      .bind(claimedAt, claimedAt, outbox.id)
+      .bind(claimedAt, claimedAt, claimedAt, outbox.id)
       .run();
     if (!claim.meta?.changes) {
       items.push({
@@ -862,12 +998,14 @@ async function flushTelegramOutbox(db, env, settings, limit = 2, onlyId = "") {
       await db
         .prepare(
           `UPDATE corporate_telegram_outbox
-           SET status = 'failed', claimed_at = '', last_error = ?, updated_at = ?
+           SET status = 'needs_review', claimed_at = '', next_attempt_at = '',
+               review_reason = 'invalid', last_attempt_at = ?, last_error = ?,
+               updated_at = ?
            WHERE id = ?`,
         )
-        .bind(error, nowIso(), outbox.id)
+        .bind(nowIso(), error, nowIso(), outbox.id)
         .run();
-      items.push({ ...outbox, status: "failed", error });
+      items.push({ ...outbox, status: "needs_review", error });
       continue;
     }
 
@@ -878,7 +1016,8 @@ async function flushTelegramOutbox(db, env, settings, limit = 2, onlyId = "") {
         .prepare(
           `UPDATE corporate_telegram_outbox
            SET status = 'sent', sent_at = ?, telegram_message_id = ?,
-               claimed_at = '', last_error = '', updated_at = ?
+               claimed_at = '', next_attempt_at = '', review_reason = '',
+               last_error = '', updated_at = ?
            WHERE id = ?`,
         )
         .bind(
@@ -902,20 +1041,35 @@ async function flushTelegramOutbox(db, env, settings, limit = 2, onlyId = "") {
       continue;
     }
 
-    // `failed` aman dicoba lagi. `uncertain` terjadi saat koneksi putus setelah
-    // request dikirim; jangan retry otomatis agar tidak menghasilkan pesan ganda.
+    // `failed` aman dicoba lagi dengan jeda eksponensial. `uncertain` terjadi
+    // saat koneksi putus setelah request dikirim; jangan retry otomatis agar
+    // tidak menghasilkan pesan ganda. Rekonsiliasi akan memindahkannya ke
+    // needs_review setelah tenggat agar tidak menggantung selamanya.
+    const attempts = Number(outbox.attempts || 0) + 1;
     const nextStatus = result.uncertain ? "uncertain" : "failed";
+    const nextAttemptAt =
+      nextStatus === "failed"
+        ? new Date(Date.now() + retryDelayMs(attempts)).toISOString()
+        : "";
     await db
       .prepare(
         `UPDATE corporate_telegram_outbox
-         SET status = ?, claimed_at = '', last_error = ?, updated_at = ?
+         SET status = ?, claimed_at = '', next_attempt_at = ?,
+             review_reason = '', last_error = ?, updated_at = ?
          WHERE id = ?`,
       )
-      .bind(nextStatus, result.error || "Telegram gagal.", finishedAt, outbox.id)
+      .bind(
+        nextStatus,
+        nextAttemptAt,
+        result.error || "Telegram gagal.",
+        finishedAt,
+        outbox.id,
+      )
       .run();
     items.push({
       ...outbox,
       status: nextStatus,
+      nextAttemptAt,
       error: result.error || "Telegram gagal.",
     });
   }
@@ -975,11 +1129,76 @@ export function buildTelegramMessage(lead) {
 }
 
 async function notifyPending(db, env, settings, limit = 2) {
+  await reconcileTelegramOutbox(db);
   const config = telegramConfig(env, settings);
   if (!config.configured) return { checked: 0, sent: 0 };
   await seedTelegramOutbox(db);
   const result = await flushTelegramOutbox(db, env, settings, limit);
   return { checked: result.checked, sent: result.sent };
+}
+
+/**
+ * Kirim ulang eksplisit untuk pesan yang sudah berhenti otomatis. Pesan
+ * `uncertain` sengaja tidak termasuk: retry otomatis dapat menggandakan pesan
+ * yang mungkin sudah diterima Telegram. Setelah dikarantina sebagai
+ * `needs_review`, pengguna dapat memilih untuk mencoba lagi lewat aksi ini.
+ */
+export async function retryStuckTelegram(db, env, ownerId = "") {
+  await ensureCorporateSchema(db);
+  await ensureRobotSchema(db);
+  let settings = await getSettings(db, ownerId);
+  if (!settings) settings = await ensureCronOwner(db);
+  if (!telegramConfig(env, settings).configured) {
+    return {
+      ok: false,
+      requeued: 0,
+      sent: 0,
+      message: "Telegram belum dikonfigurasi.",
+      health: await readTelegramOutboxHealth(db),
+    };
+  }
+
+  const rows = await db
+    .prepare(
+      `SELECT id FROM corporate_telegram_outbox
+       WHERE status = 'failed'
+          OR (status = 'needs_review' AND review_reason IN ('failed', 'invalid', ''))
+       ORDER BY created_at ASC
+       LIMIT ?`,
+    )
+    .bind(TELEGRAM_REVIEW_BATCH_LIMIT)
+    .all();
+  let requeued = 0;
+  let sent = 0;
+  for (const row of rows.results ?? []) {
+    const now = nowIso();
+    const reset = await db
+      .prepare(
+        `UPDATE corporate_telegram_outbox
+         SET status = 'pending', attempts = 0, claimed_at = '',
+             next_attempt_at = '', last_attempt_at = '', review_reason = '',
+             last_error = '', updated_at = ?
+         WHERE id = ? AND (status = 'failed'
+           OR (status = 'needs_review' AND review_reason IN ('failed', 'invalid', '')))`,
+      )
+      .bind(now, row.id)
+      .run();
+    if (!reset.meta?.changes) continue;
+    requeued += 1;
+    const flushed = await flushTelegramOutbox(db, env, settings, 1, row.id);
+    if (flushed.items[0]?.status === "sent") sent += 1;
+  }
+
+  return {
+    ok: true,
+    requeued,
+    sent,
+    message:
+      requeued > 0
+        ? `${requeued} pesan dicoba ulang; ${sent} terkirim.`
+        : "Tidak ada pesan macet yang bisa dikirim ulang.",
+    health: await readTelegramOutboxHealth(db),
+  };
 }
 
 function normalizeCompanyName(value) {
@@ -1438,7 +1657,7 @@ async function advanceJob(db, row, env, settings, ownerId) {
   };
 }
 
-async function readStats(db) {
+export async function readStats(db) {
   const stageRows = await db
     .prepare(
       `SELECT j.stage, COUNT(*) AS total
@@ -1449,9 +1668,12 @@ async function readStats(db) {
     .all();
   const stats = {
     total: 0,
+    searches: 0,
     finding: 0,
     clarification: 0,
     publish: 0,
+    publishTelegram: 0,
+    publishProspect: 0,
     done: 0,
     paused: 0,
     active: 0,
@@ -1461,8 +1683,12 @@ async function readStats(db) {
   for (const row of stageRows.results ?? []) {
     const count = Number(row.total || 0);
     stats.total += count;
-    if (row.stage === "publish_telegram" || row.stage === "publish_prospect") {
+    if (row.stage === "publish" || row.stage === "publish_telegram") {
       stats.publish += count;
+      stats.publishTelegram += count;
+    } else if (row.stage === "publish_prospect") {
+      stats.publish += count;
+      stats.publishProspect += count;
     } else if (row.stage in stats) {
       stats[row.stage] = count;
     }
@@ -1479,6 +1705,10 @@ async function readStats(db) {
     .first();
   stats.published = Number(extras?.published || 0);
   stats.notified = Number(extras?.notified || 0);
+  const searches = await db
+    .prepare("SELECT COUNT(*) AS total FROM corporate_leads")
+    .first();
+  stats.searches = Number(searches?.total || 0);
   return stats;
 }
 
@@ -1547,16 +1777,34 @@ export async function getRobotStatus(db, env = {}, ownerId = "") {
       autoPublish: true,
     });
   }
+  await reconcileTelegramOutbox(db);
+  const outbox = await readTelegramOutboxHealth(db);
   const stats = await readStats(db);
-  const rows = await db
-    .prepare(
-      `${JOB_SELECT}
-       WHERE j.stage IN ('finding', 'clarification', 'publish', 'publish_telegram', 'publish_prospect') OR j.published_at <> ''
-       ORDER BY (j.published_at <> '') DESC, j.need_score DESC, j.updated_at DESC
-       LIMIT 6`,
-    )
-    .all();
-  const jobs = (rows.results ?? []).map(rowToJob);
+  // Kirim beberapa nama per tim, bukan satu daftar campuran, agar halaman
+  // Robot AI bisa menampilkan pekerjaan Finding, Klarifikasi, dan Publish
+  // sesuai urutan timnya tanpa kehilangan salah satu tim. Lead yang sudah
+  // selesai tidak lagi "sedang dikerjakan" sehingga tidak masuk daftar ini.
+  const teamStages = [
+    ["finding"],
+    ["clarification", "paused"],
+    ["publish", "publish_telegram", "publish_prospect"],
+  ];
+  const teamRows = await Promise.all(
+    teamStages.map(async (stages) => {
+      const placeholders = stages.map(() => "?").join(", ");
+      const result = await db
+        .prepare(
+          `${JOB_SELECT}
+           WHERE j.stage IN (${placeholders})
+           ORDER BY j.need_score DESC, j.updated_at DESC
+           LIMIT 6`,
+        )
+        .bind(...stages)
+        .all();
+      return (result.results ?? []).map(rowToJob);
+    }),
+  );
+  const jobs = teamRows.flat();
   const lastRun = await db
     .prepare(
       "SELECT started_at, finished_at, checked, found, published, notified, error FROM corporate_robot_runs ORDER BY started_at DESC LIMIT 1",
@@ -1582,6 +1830,11 @@ export async function getRobotStatus(db, env = {}, ownerId = "") {
   if (!config.chatId) {
     notes.push(
       "Chat ID Telegram belum diatur. Tambahkan TELEGRAM_CHAT_ID atau simpan chat ID lewat panel robot.",
+    );
+  }
+  if (outbox.attention > 0) {
+    notes.push(
+      `${outbox.failed} pesan gagal, ${outbox.uncertain} tidak pasti, dan ${outbox.needsReview} perlu dicek. Pesan gagal dicoba ulang otomatis; pesan yang macet dapat dikirim ulang dari panel robot.`,
     );
   }
   notes.push(
@@ -1623,6 +1876,7 @@ export async function getRobotStatus(db, env = {}, ownerId = "") {
         }
       : null,
     stats,
+    outbox,
     jobs,
     notes,
   };
@@ -1635,6 +1889,14 @@ export async function detectTelegramChat(db, env, ownerId) {
     return {
       ok: false,
       message: "TELEGRAM_BOT_TOKEN belum diatur. Buat bot di BotFather lalu simpan tokennya di Sites → Secrets.",
+    };
+  }
+  const current = await getSettings(db, ownerId);
+  if (current?.telegram_chat_id) {
+    return {
+      ok: true,
+      chatId: current.telegram_chat_id,
+      message: `Chat ID ${current.telegram_chat_id} sudah tersimpan; webhook AI Leader aktif.`,
     };
   }
 
@@ -1783,7 +2045,12 @@ export async function runCorporateRobot(db, env = {}, options = {}) {
     // diproses. Ini terjadi di dalam lock robot, jadi tidak ada dua proses
     // yang berlomba mengirim lead yang sama. Pesan tetap terkirim tanpa
     // membuka aplikasi selama cron berjalan.
-    const preflight = await notifyPending(db, env, settings, 2).catch((error) => {
+    const preflight = await notifyPending(
+      db,
+      env,
+      settings,
+      TELEGRAM_BATCH_LIMIT,
+    ).catch((error) => {
       console.error(
         "corporate_robot_telegram_preflight_error",
         error instanceof Error ? error.message : "unknown error",
@@ -1850,7 +2117,12 @@ export async function runCorporateRobot(db, env = {}, options = {}) {
     );
     await Promise.all(workers);
 
-    const pending = await notifyPending(db, env, settings, 2);
+    const pending = await notifyPending(
+      db,
+      env,
+      settings,
+      TELEGRAM_BATCH_LIMIT,
+    );
     notified += pending.sent;
 
     const finishedAt = nowIso();

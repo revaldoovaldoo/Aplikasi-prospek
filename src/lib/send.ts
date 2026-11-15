@@ -2,10 +2,7 @@ import type { Profile } from "../types";
 
 export type SendChannel = "whatsapp" | "email";
 
-/** Ubah nomor Indonesia menjadi format internasional untuk wa.me. */
-export function normalizeWhatsApp(input: string): string {
-  const digits = (input || "").replace(/\D/g, "");
-  if (!digits) return "";
+function toWhatsAppNumber(digits: string): string {
   if (digits.startsWith("620")) return `62${digits.slice(3)}`;
   if (digits.startsWith("0")) return `62${digits.slice(1)}`;
   if (digits.startsWith("62")) return digits;
@@ -13,8 +10,28 @@ export function normalizeWhatsApp(input: string): string {
   return digits;
 }
 
+function validWhatsAppNumber(value: string): boolean {
+  return /^62\d{8,13}$/.test(value);
+}
+
+/**
+ * Ubah satu nomor PIC menjadi nomor internasional untuk wa.me. Nomor PIC bisa
+ * berisi dua nomor sekaligus; pilih satu nomor valid, jangan menggabungkan
+ * seluruh digitnya. Nomor gabungan yang tidak bisa dipisahkan dengan jelas
+ * ditolak agar chat tidak diarahkan ke kontak yang salah.
+ */
+export function normalizeWhatsApp(input: string): string {
+  const candidates = String(input || "")
+    .split(/[;\/|,\r\n]+/)
+    .map((part) => part.replace(/\D/g, ""))
+    .filter(Boolean)
+    .map(toWhatsAppNumber)
+    .filter(validWhatsAppNumber);
+  return candidates.find((number) => number.startsWith("628")) ?? candidates[0] ?? "";
+}
+
 export function isValidWhatsApp(input: string): boolean {
-  return normalizeWhatsApp(input).length >= 9;
+  return Boolean(normalizeWhatsApp(input));
 }
 
 export function isValidEmail(input: string): boolean {

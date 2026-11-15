@@ -18,6 +18,7 @@ import {
   makeQuoteRecord,
   ppnOf,
   profileName,
+  quoteFiles,
   todayISO,
   uploadedQuotes,
 } from "./lib/data";
@@ -32,6 +33,7 @@ import {
 } from "./lib/corporate";
 import {
   ApiError,
+  deletePdf,
   fetchCorporateData,
   fetchSession,
   fetchState,
@@ -304,6 +306,7 @@ export default function App() {
   const conflictRef = useRef(false);
   const skipSaveRef = useRef(true);
   const saveTimerRef = useRef<number | undefined>(undefined);
+  const pendingFileDeletesRef = useRef<Set<string>>(new Set());
   const mountedRef = useRef(true);
 
   useEffect(() => {
@@ -408,17 +411,32 @@ export default function App() {
 
     try {
       const result = await pushState(dbRef.current, revisionRef.current);
-      if (!mountedRef.current) return;
 
       if (result.conflict) {
+        if (!mountedRef.current) return;
         conflictRef.current = true;
+        // Jangan hapus objek R2 saat state lokal belum berhasil disimpan;
+        // versi server bisa jadi masih mereferensikan file tersebut.
+        pendingFileDeletesRef.current.clear();
         setConflict({ data: result.data, revision: result.revision, updatedAt: result.updatedAt });
         setSyncState("conflict");
         return;
       }
 
       revisionRef.current = result.revision;
-      setSyncState("saved");
+      if (mountedRef.current) setSyncState("saved");
+      // Objek R2 baru dihapus setelah referensinya benar-benar tersimpan di
+      // D1. Jika penyimpanan gagal, file tetap ada dan tidak menjadi tautan
+      // mati pada state lama. Proses ini tetap berjalan walau komponen sudah
+      // unmount karena state server sudah committed.
+      const pendingDeletes = Array.from(pendingFileDeletesRef.current);
+      pendingFileDeletesRef.current.clear();
+      for (const fileId of pendingDeletes) {
+        void deletePdf(fileId).catch((error) => {
+          pendingFileDeletesRef.current.add(fileId);
+          console.error("delete_pdf_error", error);
+        });
+      }
     } catch (error) {
       if (!mountedRef.current) return;
       if (error instanceof ApiError && error.status === 401) {
@@ -474,7 +492,7 @@ export default function App() {
     if (!company) return;
     const existing = latestQuoteForCompany(db.quotes, companyId);
     const cancelled = existing?.status === "tidak-jadi" || (!existing && Boolean(company.lostAt));
-    if (existing?.status === "po" || cancelled) {
+    if (cancelled) {
       setPickerOpen(false);
       setDrawerId(companyId);
       return;
@@ -491,9 +509,20 @@ export default function App() {
     quoteFile: StoredFile;
   }) => {
     const now = new Date().toISOString();
+    let saved = input;
     updateDb((previous) => {
       const existing = latestQuoteForCompany(previous.quotes, input.companyId);
       if (existing) {
+        // Satu perusahaan memakai satu seri nomor. Mengganti PDF tidak boleh
+        // mengubah nomor, tetapi tanggal penawaran mengikuti input terbaru.
+        // Riwayat PDF lama tetap disimpan.
+        const number = existing.number;
+        const date = input.date || existing.date;
+        const sameFile = existing.quoteFile?.id === input.quoteFile.id;
+        const history = sameFile
+          ? existing.quoteHistory ?? []
+          : [...(existing.quoteHistory ?? []), existing.quoteFile];
+        saved = { ...input, number, date };
         return {
           ...previous,
           companies: previous.companies.map((company) =>
@@ -505,23 +534,9 @@ export default function App() {
             quote.id === existing.id
               ? {
                   ...quote,
-                  number: input.number,
-                  date: input.date,
+                  date,
                   quoteFile: input.quoteFile,
-                  status: "penawaran",
-                  lostReason: "",
-                  lostAt: "",
-                  poFile: null,
-                  poAt: "",
-                  poAmount: 0,
-                  poPpn: 0,
-                  poYears: 0,
-                  poCommission: 0,
-                  commissionStart: "",
-                  bast: null,
-                  bastFile: null,
-                  bastSignedFile: null,
-                  bastSignedAt: "",
+                  quoteHistory: history,
                   updatedAt: now,
                 }
               : quote,
@@ -539,7 +554,73 @@ export default function App() {
       };
     });
     setUploadTarget(null);
-    setSendTarget(input);
+    setSendTarget(saved);
+  };
+
+  const requestDeleteQuoteFile = (
+    company: Company,
+    quote: QuoteRecord,
+    file: StoredFile,
+  ) => {
+    const remaining = quoteFiles(quote).filter((item) => item.id !== file.id);
+    const deletingCurrent = quote.quoteFile.id === file.id;
+    setConfirmState({
+      title: "Hapus PDF penawaran?",
+      message:
+        deletingCurrent && remaining.length === 0
+          ? `PDF ${file.name} akan dihapus. Record penawaran ${quote.number} juga dihapus karena tidak ada PDF lain.`
+          : deletingCurrent
+            ? `PDF ${file.name} akan dihapus. PDF versi sebelumnya akan menjadi PDF penawaran aktif dengan nomor ${quote.number}.`
+            : `PDF ${file.name} akan dihapus dari riwayat ${company.name}. Nomor penawaran tidak berubah.`,
+      confirmLabel: "Hapus PDF",
+      action: () => {
+        pendingFileDeletesRef.current.add(file.id);
+        updateDb((previous) => {
+          const target = previous.quotes.find((item) => item.id === quote.id);
+          if (!target) return previous;
+          const files = quoteFiles(target);
+          const nextFiles = files.filter((item) => item.id !== file.id);
+          if (target.quoteFile.id === file.id && nextFiles.length === 0) {
+            return {
+              ...previous,
+              quotes: previous.quotes.filter((item) => item.id !== target.id),
+            };
+          }
+          if (target.quoteFile.id !== file.id) {
+            return {
+              ...previous,
+              quotes: previous.quotes.map((item) =>
+                item.id === target.id
+                  ? {
+                      ...item,
+                      quoteHistory: (item.quoteHistory ?? []).filter(
+                        (version) => version.id !== file.id,
+                      ),
+                      updatedAt: new Date().toISOString(),
+                    }
+                  : item,
+              ),
+            };
+          }
+          // PDF aktif dihapus: promosikan versi sebelumnya yang paling baru.
+          const [nextCurrent, ...rest] = nextFiles;
+          return {
+            ...previous,
+            quotes: previous.quotes.map((item) =>
+              item.id === target.id
+                ? {
+                    ...item,
+                    quoteFile: nextCurrent,
+                    quoteHistory: rest.slice().reverse(),
+                    updatedAt: new Date().toISOString(),
+                  }
+                : item,
+            ),
+          };
+        });
+        if (deletingCurrent && remaining.length === 0) setUploadTarget(null);
+      },
+    });
   };
 
   const markLost = (companyId: string, reason: string) => {
@@ -822,6 +903,7 @@ export default function App() {
     const latest = conflict.data ?? emptyDatabase();
     revisionRef.current = conflict.revision;
     conflictRef.current = false;
+    pendingFileDeletesRef.current.clear();
     setConflict(null);
     skipSaveRef.current = true;
     dbRef.current = latest;
@@ -844,6 +926,9 @@ export default function App() {
     : null;
   const uploadCompany = uploadTarget
     ? db.companies.find((company) => company.id === uploadTarget.companyId) ?? null
+    : null;
+  const uploadQuote = uploadTarget?.existing
+    ? db.quotes.find((quote) => quote.id === uploadTarget.existing?.id) ?? null
     : null;
   const lostCompany = lostTarget
     ? db.companies.find((company) => company.id === lostTarget.id) ?? null
@@ -987,6 +1072,7 @@ export default function App() {
           setSignedBastTarget(quote);
         }}
         onDelete={requestDeleteCompany}
+        onDeleteQuoteFile={requestDeleteQuoteFile}
         onCreateQuote={(companyId) => setQuoteBuilderId(companyId)}
       />
 
@@ -1005,14 +1091,25 @@ export default function App() {
       <QuoteUploadDialog
         open={Boolean(uploadTarget)}
         company={uploadCompany}
-        existing={uploadTarget?.existing ?? null}
+        existing={uploadQuote}
+        quotes={db.quotes}
         onClose={() => setUploadTarget(null)}
         onSave={saveUploadedQuote}
+        onDeleteVersion={(file) => {
+          if (uploadCompany && uploadQuote) {
+            requestDeleteQuoteFile(uploadCompany, uploadQuote, file);
+          }
+        }}
       />
 
       <QuoteBuilderDialog
         open={Boolean(quoteBuilderCompany)}
         company={quoteBuilderCompany}
+        existing={
+          quoteBuilderCompany
+            ? latestQuoteForCompany(db.quotes, quoteBuilderCompany.id)
+            : null
+        }
         quotes={db.quotes}
         onClose={() => setQuoteBuilderId(null)}
         onRenameCompany={renameCompany}

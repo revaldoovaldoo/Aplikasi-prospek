@@ -110,14 +110,30 @@ export interface CorporateRobotJob {
 
 export interface CorporateRobotStats {
   total: number;
+  /** Jumlah lead yang tersedia di Corporate Engine, dipakai sebagai progres Finding. */
+  searches: number;
   finding: number;
   clarification: number;
   publish: number;
+  publishTelegram: number;
+  publishProspect: number;
   done: number;
   paused: number;
   active: number;
   published: number;
   notified: number;
+}
+
+export interface CorporateRobotOutbox {
+  pending: number;
+  sending: number;
+  sent: number;
+  failed: number;
+  uncertain: number;
+  needsReview: number;
+  retryable: number;
+  total: number;
+  attention: number;
 }
 
 export interface CorporateRobotAgent {
@@ -155,6 +171,7 @@ export interface CorporateRobotStatus {
     error: string;
   } | null;
   stats: CorporateRobotStats;
+  outbox?: CorporateRobotOutbox;
   jobs: CorporateRobotJob[];
   notes: string[];
 }

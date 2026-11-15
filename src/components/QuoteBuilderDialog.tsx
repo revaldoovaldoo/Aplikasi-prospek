@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { Company, QuoteRecord, StoredFile } from "../types";
 import { uploadPdf } from "../lib/api";
-import { autoQuoteNumber, parseAmount, todayISO, yearOf } from "../lib/data";
+import { autoQuoteNumber, nextAvailableQuoteSequence, parseAmount, todayISO } from "../lib/data";
 import { quoteFilename } from "../lib/send";
 import { buildQuotePdf, type QuoteDevice } from "../lib/quotePdf";
 import { renderPdfPages } from "../lib/pdfRender";
@@ -11,6 +11,7 @@ import { DownloadIcon, PlusIcon, TrashIcon } from "./icons";
 interface Props {
   open: boolean;
   company: Company | null;
+  existing: QuoteRecord | null;
   quotes: QuoteRecord[];
   onClose: () => void;
   onRenameCompany: (companyId: string, name: string) => void;
@@ -26,17 +27,6 @@ interface DeviceRow extends QuoteDevice {
   id: string;
 }
 
-function nextSequence(quotes: QuoteRecord[], date: string): number {
-  const year = yearOf(date);
-  const used = quotes
-    .filter((quote) => quote.date.startsWith(`${year}-`))
-    .map((quote) => {
-      const match = /^(\d{1,3})\//.exec(quote.number);
-      return match ? Number(match[1]) : 0;
-    });
-  return Math.max(0, ...used) + 1;
-}
-
 function initialDevices(): DeviceRow[] {
   return Array.from({ length: 3 }, (_, index) => ({
     id: `device_${index}`,
@@ -48,6 +38,7 @@ function initialDevices(): DeviceRow[] {
 export default function QuoteBuilderDialog({
   open,
   company,
+  existing,
   quotes,
   onClose,
   onRenameCompany,
@@ -73,14 +64,17 @@ export default function QuoteBuilderDialog({
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState("");
 
-  const sequence = useMemo(() => nextSequence(quotes, date), [quotes, date]);
-  const number = autoQuoteNumber(sequence, date);
+  const sequence = useMemo(
+    () => nextAvailableQuoteSequence(quotes, date),
+    [quotes, date],
+  );
+  const number = existing?.number || autoQuoteNumber(sequence, date);
 
   useEffect(() => {
     if (!open) return;
     setStep("form");
     setCompanyName(company?.name || "");
-    setDate(todayISO());
+    setDate(existing?.date || todayISO());
     setCity("Bogor");
     setContactName(company?.contactName || "");
     setBandwidthMode("Dedicated");
@@ -97,7 +91,7 @@ export default function QuoteBuilderDialog({
     setPreviewPages([]);
     setPreviewLoading(false);
     setPreviewError("");
-  }, [open, company?.id]);
+  }, [open, company?.id, existing?.id]);
 
   useEffect(
     () => () => {
@@ -225,7 +219,13 @@ export default function QuoteBuilderDialog({
     <Modal
       open={open}
       onClose={busy ? () => undefined : onClose}
-      title={step === "form" ? "Buat penawaran" : "Pratinjau penawaran"}
+      title={
+        step === "form"
+          ? existing
+            ? "Buat ulang PDF penawaran"
+            : "Buat penawaran"
+          : "Pratinjau penawaran"
+      }
       subtitle={`${companyName.trim() || company.name} · ${number}`}
       width={step === "preview" ? 980 : 760}
       footer={
@@ -277,6 +277,11 @@ export default function QuoteBuilderDialog({
                 value={date}
                 onChange={(event) => setDate(event.target.value)}
               />
+              {existing ? (
+                <span className="field-hint">
+                  Nomor dikunci agar PDF pengganti memakai seri penawaran yang sama; tanggal dapat diperbarui.
+                </span>
+              ) : null}
             </label>
             <label className="field">
               <span>Kota</span>
