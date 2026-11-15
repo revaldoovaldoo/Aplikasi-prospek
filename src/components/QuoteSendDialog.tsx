@@ -48,21 +48,27 @@ function triggerDownload(quote: UploadedQuoteInfo) {
   const anchor = document.createElement("a");
   anchor.href = pdfUrl(quote.quoteFile.id);
   anchor.download = quoteFilename(quote.number);
+  anchor.style.display = "none";
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
 }
 
-function openExternal(url: string, newTab: boolean) {
+/** Buka tab baru dan laporkan bila browser memblokir popup. */
+function openExternal(url: string, newTab: boolean): boolean {
   if (newTab) {
-    window.open(url, "_blank", "noopener,noreferrer");
-    return;
+    const opened = window.open(url, "_blank");
+    if (!opened) return false;
+    opened.opener = null;
+    return true;
   }
   const anchor = document.createElement("a");
   anchor.href = url;
+  anchor.style.display = "none";
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
+  return true;
 }
 
 export default function QuoteSendDialog({
@@ -116,10 +122,12 @@ export default function QuoteSendDialog({
     // Utamakan nomor PIC: buka chat langsung ke nomor tersebut dengan pesan
     // yang sudah terisi, lalu unduh PDF untuk dilampirkan. Web Share tidak
     // dipakai di sini karena tidak bisa memilih nomor PIC secara otomatis.
-    openExternal(whatsappUrl(waPhone, message), true);
+    const opened = openExternal(whatsappUrl(waPhone, message), true);
     triggerDownload(quote);
     setNotice(
-      `WhatsApp dibuka ke nomor ${waNumber} dengan pesan terisi. PDF sudah diunduh; lampirkan PDF tersebut pada chat PIC.`,
+      opened
+        ? `WhatsApp dibuka ke nomor ${waNumber} dengan pesan terisi. PDF sudah diunduh; lampirkan PDF tersebut pada chat PIC.`
+        : `Popup diblokir. PDF sudah diunduh; izinkan popup atau buka chat WhatsApp ke nomor ${waNumber} secara manual.`,
     );
   };
 
