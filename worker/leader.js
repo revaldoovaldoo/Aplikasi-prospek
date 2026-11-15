@@ -1,4 +1,5 @@
 import { ensureCorporateSchema } from "./corporate.js";
+import { selectPicPhone } from "./phone.js";
 import {
   readStats,
   readTelegramOutboxHealth,
@@ -118,6 +119,7 @@ export async function readLeaderSnapshot(db) {
       lastRunAt: "",
       settings: null,
       data: null,
+      leads: [],
       ownerId: "",
       outbox: emptyOutbox(),
     };
@@ -168,6 +170,30 @@ export async function readLeaderSnapshot(db) {
   const lastRunAt =
     lastRunRow?.finished_at || lastRunRow?.started_at || "";
 
+  let leads = [];
+  try {
+    const result = await db
+      .prepare(
+        "SELECT name, city, area, category, email, phone, contact_name, validation_status FROM corporate_leads ORDER BY city ASC, name ASC LIMIT 1200",
+      )
+      .all();
+    leads = (result.results ?? []).map((row) => ({
+      name: row.name,
+      city: row.city,
+      area: row.area || "",
+      category: row.category,
+      email: row.email || "",
+      phone: row.phone || "",
+      contactName: row.contact_name || "",
+      validationStatus: row.validation_status || "",
+    }));
+  } catch (error) {
+    console.error(
+      "ai_leader_leads_error",
+      error instanceof Error ? error.message : "unknown error",
+    );
+  }
+
   let settings = null;
   let ownerId = "";
   let data = null;
@@ -198,7 +224,7 @@ export async function readLeaderSnapshot(db) {
       error instanceof Error ? error.message : "unknown error",
     );
   }
-  return { stats, lastRun, lastRunAt, settings, ownerId, data, outbox };
+  return { stats, lastRun, lastRunAt, settings, ownerId, data, leads, outbox };
 }
 
 function statsLine(label, value, extra = "") {
@@ -551,6 +577,239 @@ function activeCompanies(snapshot) {
   };
 }
 
+const LEAD_CATEGORY_LABELS = {
+  hotel: "Hotel",
+  school: "Sekolah",
+  company: "Perusahaan",
+};
+
+function leadCategoryLabel(category) {
+  return LEAD_CATEGORY_LABELS[category] || "Lead";
+}
+
+function leadCategoriesIn(message) {
+  const categories = new Set();
+  if (/(hotel|penginapan|resort|guest.?house)/.test(message)) categories.add("hotel");
+  if (/(sekolah|school|kampus|universitas|madrasah|pesantren)/.test(message)) {
+    categories.add("school");
+  }
+  if (/(perusahaan|company|kantor|pabrik|industri|bisnis)/.test(message)) {
+    categories.add("company");
+  }
+  return categories;
+}
+
+function normalizeLocationText(value) {
+  return normalizeText(value).replace(/\bkabupaten\b/g, "kab");
+}
+
+function matchedLeadCities(leads, message) {
+  const normalized = normalizeLocationText(message);
+  const padded = ` ${normalized} `;
+  const cities = [...new Set(leads.map((lead) => clean(lead.city)).filter(Boolean))];
+  const scored = cities
+    .map((city) => {
+      const key = normalizeLocationText(city);
+      if (padded.includes(` ${key} `)) return { city, score: 2 };
+      const base = key.replace(/^(kota|kab) /, "");
+      if (base && padded.includes(` ${base} `)) return { city, score: 1 };
+      return { city, score: 0 };
+    })
+    .filter((entry) => entry.score > 0);
+  if (scored.length === 0) return [];
+  const best = Math.max(...scored.map((entry) => entry.score));
+  return scored
+    .filter((entry) => entry.score === best)
+    .map((entry) => entry.city);
+}
+
+function whatsappUrl(value) {
+  const digits = selectPicPhone(value).replace(/\D/g, "");
+  if (!digits) return "";
+  const normalized = digits.startsWith("0")
+    ? `62${digits.slice(1)}`
+    : digits.startsWith("62")
+      ? digits
+      : digits.startsWith("8")
+        ? `62${digits}`
+        : digits;
+  return /^628\d{7,13}$/.test(normalized) ? `https://wa.me/${normalized}` : "";
+}
+
+function leadHasContact(lead) {
+  return Boolean(clean(lead.contactName) || clean(lead.phone) || clean(lead.email));
+}
+
+function leadContactLine(lead) {
+  const pic = clean(lead.contactName);
+  const phone = selectPicPhone(lead.phone);
+  const wa = whatsappUrl(lead.phone);
+  const parts = [];
+  if (pic) parts.push(escapeHtml(pic));
+  if (phone) {
+    parts.push(
+      wa
+        ? `<a href="${wa}">${escapeHtml(phone)}</a>`
+        : escapeHtml(phone),
+    );
+  }
+  if (parts.length === 0 && clean(lead.email)) parts.push(escapeHtml(lead.email));
+  return parts.length > 0 ? parts.join(" · ") : "PIC belum tersimpan";
+}
+
+function leadCoverageRows(leads) {
+  const cities = new Map();
+  for (const lead of leads) {
+    const city = clean(lead.city);
+    if (!city) continue;
+    let row = cities.get(city);
+    if (!row) {
+      row = { city, total: 0, withContact: 0, hotel: 0, school: 0, company: 0 };
+      cities.set(city, row);
+    }
+    row.total += 1;
+    if (leadHasContact(lead)) row.withContact += 1;
+    if (row[lead.category] !== undefined) row[lead.category] += 1;
+  }
+  return [...cities.values()];
+}
+
+function leadCoverageReply(leads) {
+  const rows = leadCoverageRows(leads);
+  const lines = [
+    "<b>AI Leader · Cakupan Lokasi Tim Robot</b>",
+    "",
+    `Ada <b>${count(leads.length)}</b> lead dari ${count(rows.length)} lokasi di Corporate Engine.`,
+  ];
+  for (const row of rows) {
+    lines.push(
+      `• <b>${escapeHtml(row.city)}</b> — ${count(row.total)} lead, ${count(row.withContact)} punya kontak PIC`,
+      `  Hotel ${count(row.hotel)} · Sekolah ${count(row.school)} · Perusahaan ${count(row.company)}`,
+    );
+  }
+  lines.push(
+    "",
+    "Sebutkan lokasi dan kategorinya, misalnya <code>hotel Kab. Bogor</code>, untuk melihat nama dan kontak PIC.",
+  );
+  return lines.join("\n");
+}
+
+/** Jawaban daftar lead per lokasi; tidak memakai model agar nama/kontak akurat. */
+function locationReply(snapshot, text) {
+  const leads = Array.isArray(snapshot.leads) ? snapshot.leads : [];
+  if (leads.length === 0) return "";
+  const message = normalizeLocationText(text);
+  if (!message) return "";
+
+  const coverageQuestion =
+    /(lokasi|daerah|wilayah|cakupan)/.test(message) &&
+    /(apa saja|semua|daftar|tersedia|proses|robot|tim|lead|prospek|mana)/.test(message);
+  const cities = matchedLeadCities(leads, message);
+  if (cities.length === 0) {
+    return coverageQuestion ? leadCoverageReply(leads) : "";
+  }
+
+  // Pertanyaan strategis tetap dijawab model; daftar konkret dijawab data.
+  if (/(strategi|analisis|analisa|peluang|bandingkan|prediksi|menurut|pendapat|risiko)/.test(message)) {
+    return "";
+  }
+  const categories = leadCategoriesIn(message);
+  const asksList =
+    /(nama|daftar|berikan|kasih|minta|sebutkan|siapa|apa saja|contoh|lead|prospek|pic|kontak|nomor|telepon|komunikasi|hubungi|langsung|berapa|jumlah|total|untuk|kabupaten|kota|daerah|wilayah)/.test(
+      message,
+    );
+  if (!asksList && categories.size === 0) return "";
+
+  const citySet = new Set(cities);
+  const filtered = leads.filter(
+    (lead) =>
+      citySet.has(lead.city) &&
+      (categories.size === 0 || categories.has(lead.category)),
+  );
+  if (filtered.length === 0) {
+    return [
+      `<b>AI Leader · ${escapeHtml(cities.join(" + "))}</b>`,
+      "",
+      "Belum ada lead untuk kategori itu di lokasi tersebut.",
+      "Ketik <code>lokasi apa saja</code> untuk melihat cakupan Tim Robot.",
+    ].join("\n");
+  }
+
+  const seen = new Set();
+  const unique = filtered.filter((lead) => {
+    const key = `${normalizeText(lead.name)}|${selectPicPhone(lead.phone).replace(/\D/g, "")}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  const withContact = unique.filter(leadHasContact);
+  const categoryOrder =
+    categories.size > 0 ? [...categories] : ["hotel", "school", "company"];
+  const title =
+    categories.size === 1
+      ? leadCategoryLabel(categoryOrder[0])
+      : "Hotel, Sekolah & Perusahaan";
+  const lines = [
+    `<b>AI Leader · ${title} — ${escapeHtml(cities.join(" + "))}</b>`,
+    "",
+    `Ditemukan <b>${count(unique.length)}</b> lead; <b>${count(withContact.length)}</b> sudah punya kontak PIC.`,
+  ];
+  for (const category of categoryOrder) {
+    const all = unique.filter((lead) => lead.category === category);
+    if (all.length === 0) continue;
+    const contactable = withContact.filter(
+      (lead) => lead.category === category,
+    ).length;
+    lines.push(
+      `• ${leadCategoryLabel(category)}: ${count(all.length)} lead, ${count(contactable)} punya kontak PIC`,
+    );
+  }
+  lines.push("");
+
+  if (withContact.length === 0) {
+    lines.push("Belum ada nama/nomor PIC tersimpan untuk wilayah ini. Nama lead yang ada:");
+    unique.slice(0, 10).forEach((lead) => {
+      lines.push(`• ${escapeHtml(lead.name)} — ${leadCategoryLabel(lead.category)}`);
+    });
+    lines.push("", "Lengkapi kontak lewat panel Corporate Engine agar bisa dihubungi langsung.");
+    return lines.join("\n");
+  }
+
+  lines.push("Yang bisa langsung dihubungi:");
+  const perCategory = categories.size === 1 ? 10 : 4;
+  let displayed = 0;
+  for (const category of categoryOrder) {
+    const group = withContact
+      .filter((lead) => lead.category === category)
+      .sort((a, b) => {
+        const score = (lead) =>
+          (clean(lead.contactName) && clean(lead.phone) ? 4 : 0) +
+          (clean(lead.phone) ? 2 : 0) +
+          (lead.validationStatus === "verified" ? 1 : 0);
+        return score(b) - score(a) || String(a.name).localeCompare(String(b.name));
+      })
+      .slice(0, perCategory);
+    if (group.length === 0) continue;
+    displayed += group.length;
+    lines.push("", `<b>${leadCategoryLabel(category)}</b>`);
+    for (const lead of group) {
+      const place = clean(lead.area)
+        ? ` — ${escapeHtml(clean(lead.area))}`
+        : "";
+      lines.push(`• <b>${escapeHtml(lead.name)}</b>${place}`);
+      lines.push(`  ${leadContactLine(lead)}`);
+    }
+  }
+  if (withContact.length > displayed) {
+    lines.push("", `Menampilkan sebagian kontak. Total ${count(withContact.length)} lead punya kontak PIC.`);
+  }
+  lines.push(
+    "",
+    "Ketik nama kategori lain atau lokasi lain untuk daftar berikutnya.",
+  );
+  return lines.join("\n");
+}
+
 function prospectReply(snapshot) {
   const { companies, active } = activeCompanies(snapshot);
   const verified = active.filter(
@@ -598,6 +857,8 @@ function menuReply() {
     "Halo, saya bisa membaca data aplikasi dan menjelaskannya. Tanyakan dengan bahasa Indonesia, misalnya:",
     "",
     "• <code>status PT Cek 3</code> — detail perusahaan dan penawarannya",
+    "• <code>hotel Kab. Bogor</code> — nama dan kontak PIC per lokasi",
+    "• <code>lokasi apa saja</code> — cakupan wilayah Tim Robot",
     "• <code>progress tim</code> — Finding, Klarifikasi, Publish",
     "• <code>status antrean telegram</code> — pesan macet dan perlu dicek",
     "• <code>status penawaran</code>, <code>status PO</code>, <code>status BAST</code>",
@@ -642,11 +903,26 @@ function compactSnapshot(snapshot) {
     : [];
   const quotes = Array.from(quoteByCompany(snapshot).values());
   const companyName = new Map(companies.map((company) => [company.id, company.name]));
+  const leads = Array.isArray(snapshot.leads) ? snapshot.leads : [];
+  const leadSamples = leads
+    .filter((lead) => leadHasContact(lead))
+    .slice(0, 60)
+    .map((lead) => ({
+      name: lead.name,
+      city: lead.city,
+      area: lead.area || "",
+      category: leadCategoryLabel(lead.category),
+      pic: lead.contactName || "",
+      phone: lead.phone || "",
+      email: lead.email || "",
+    }));
   const compact = {
     stats: snapshot.stats || emptyStats(),
     outbox: snapshot.outbox || emptyOutbox(),
     lastRun: snapshot.lastRun,
     lastRunAt: snapshot.lastRunAt,
+    leadCoverage: leadCoverageRows(leads),
+    leadSamples,
     companies: companies.slice(0, 300).map((company) => ({
       name: company.name,
       location: company.location,
@@ -819,13 +1095,18 @@ export function buildLeaderReply(text, snapshot) {
   if (/(bantuan|help|menu|fitur|bisa apa|perintah)/.test(message)) {
     return menuReply();
   }
+  const company = companyReply(snapshot, message);
+  // Detail perusahaan tetap menang atas kata lokasi/kategori yang kebetulan
+  // ada di namanya, misalnya "status Aston Hotel Bogor".
+  if (company && /(status|detail|info|profil)\b/.test(message)) return company;
+  const location = locationReply(snapshot, message);
+  if (location) return location;
   if (/(ide|saran|rekomendasi|masukan|strategi|prioritas|majukan|tingkatkan|perbaiki|next|langkah|apa yang harus|follow.?up|kerja apa)/.test(message)) {
     return adviceReply(snapshot);
   }
   if (/(antre|antrian|outbox|pesan macet|gagal kirim|needs.?review|uncertain|telegram)/.test(message)) {
     return queueReply(snapshot);
   }
-  const company = companyReply(snapshot, message);
   if (company) return company;
   if (/(cancel|batal|tidak jadi)/.test(message)) {
     return cancelReply(snapshot);
@@ -888,6 +1169,9 @@ async function processUpdate(
   let answer = await actionReply(text, snapshot, env, db);
   let plain = false;
   let aiTried = false;
+  // Daftar lead per lokasi dijawab dari data, bukan model. Pertanyaan
+  // "jelaskan hotel di Kab. Bogor" tetap harus menyebut nama dan kontak asli.
+  if (!answer) answer = locationReply(snapshot, text);
   if (!answer && shouldUseFreeformAnswer(text)) {
     aiTried = true;
     const generated = await freeform(db, env, snapshot, text);

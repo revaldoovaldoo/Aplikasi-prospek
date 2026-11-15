@@ -56,6 +56,78 @@ test("AI Leader menjawab status penawaran", () => {
   assert.match(reply, /PO/);
 });
 
+const locationSnapshot = {
+  ...snapshot,
+  leads: [
+    {
+      name: "Aston Hotel Bogor",
+      city: "Kab. Bogor",
+      area: "Ciawi",
+      category: "hotel",
+      contactName: "Nurhayati",
+      phone: "+62 815-5333-2602",
+    },
+    {
+      name: "Kian Mas Boutique Resort",
+      city: "Kab. Bogor",
+      area: "Ciawi",
+      category: "hotel",
+      contactName: "Putri Sales",
+      phone: "0812-3456-7890",
+    },
+    {
+      name: "SMAN 1 Cibinong",
+      city: "Kab. Bogor",
+      category: "school",
+      contactName: "Budi Santoso",
+      phone: "0813-1111-2222",
+    },
+    {
+      name: "PT Sentul Teknologi",
+      city: "Kab. Bogor",
+      category: "company",
+      contactName: "Rina",
+      phone: "0814-3333-4444",
+    },
+    {
+      name: "Hotel Jakarta Pusat",
+      city: "Jakarta",
+      category: "hotel",
+      contactName: "Andi",
+      phone: "0815-5555-6666",
+    },
+  ],
+};
+
+test("AI Leader menyebut nama dan PIC lead sesuai kabupaten yang ditanyakan", () => {
+  const reply = buildLeaderReply(
+    "berikan saya nama hotel/perusahaan/sekolah untuk kabupaten bogor",
+    locationSnapshot,
+  );
+  assert.match(reply, /Kab\. Bogor/);
+  assert.match(reply, /Aston Hotel Bogor/);
+  assert.match(reply, /SMAN 1 Cibinong/);
+  assert.match(reply, /PT Sentul Teknologi/);
+  assert.match(reply, /Nurhayati/);
+  assert.match(reply, /wa\.me\/6281553332602/);
+  assert.doesNotMatch(reply, /Hotel Jakarta Pusat/);
+});
+
+test("AI Leader tetap menampilkan daftar saat lokasi disebut singkat", () => {
+  const reply = buildLeaderReply("Untuk kabupaten bogor", locationSnapshot);
+  assert.match(reply, /Aston Hotel Bogor/);
+  assert.match(reply, /SMAN 1 Cibinong/);
+  assert.match(reply, /PT Sentul Teknologi/);
+});
+
+test("AI Leader merangkum semua lokasi yang diproses Tim Robot", () => {
+  const reply = buildLeaderReply("lokasi apa saja yang diproses tim robot?", locationSnapshot);
+  assert.match(reply, /Cakupan Lokasi Tim Robot/);
+  assert.match(reply, /Kab\. Bogor/);
+  assert.match(reply, /Jakarta/);
+  assert.match(reply, /<b>5<\/b> lead/);
+});
+
 test("AI Leader hanya memicu kirim ulang saat diminta eksplisit", () => {
   assert.equal(isRetryRequest("tolong kirim ulang pesan macet"), true);
   assert.equal(isRetryRequest("berapa prospek saya"), false);
@@ -114,6 +186,7 @@ test("readLeaderSnapshot hanya menjalankan SELECT dan tidak menulis data robot",
   assert.equal(result.settings?.telegram_chat_id, "123");
   assert.equal(result.stats.searches, 0);
   assert.equal(result.data?.companies.length, 1);
+  assert.deepEqual(result.leads, []);
 });
 
 test("AI Leader menjawab antrean Telegram dan prioritas kerja", () => {
@@ -202,6 +275,51 @@ test("pertanyaan bebas dijawab lewat jalur AI read-only", async () => {
   assert.match(replies[0].text, /Jawaban bebas/);
   assert.equal(replies[0].options.parseMode, "plain");
   assert.equal(writes.length, 0);
+});
+
+test("pertanyaan daftar per lokasi dijawab dari data tanpa model", async () => {
+  let aiCalled = false;
+  const replies: string[] = [];
+  const db = {
+    prepare(sql: string) {
+      if (/SELECT value FROM corporate_meta/.test(sql)) {
+        return { bind: () => ({ first: async () => ({ value: "secret-benar" }) }) };
+      }
+      if (/INSERT INTO corporate_meta/.test(sql)) {
+        return { bind: () => ({ run: async () => ({ meta: { changes: 1 } }) }) };
+      }
+      throw new Error(`unexpected SQL: ${sql}`);
+    },
+  };
+  const request = {
+    headers: new Headers({ "x-telegram-bot-api-secret-token": "secret-benar" }),
+    json: async () => ({
+      update_id: 9010,
+      message: {
+        chat: { id: 123, type: "private" },
+        text: "jelaskan daftar hotel di kabupaten bogor",
+      },
+    }),
+  };
+  const result = await handleTelegramLeaderWebhook(db, {}, request, {
+    readLeaderSnapshot: async () => ({
+      ...locationSnapshot,
+      settings: { telegram_chat_id: "123" },
+    }),
+    askJenova: async () => {
+      aiCalled = true;
+      return "jawaban model";
+    },
+    sendTelegram: async (_env, _settings, text) => {
+      replies.push(text);
+      return { ok: true };
+    },
+  });
+  assert.equal(result.ok, true);
+  assert.equal(aiCalled, false);
+  assert.equal(replies.length, 1);
+  assert.match(replies[0], /Aston Hotel Bogor/);
+  assert.doesNotMatch(replies[0], /jawaban model/);
 });
 
 test("webhook hanya memproses satu update_id sekali", async () => {
