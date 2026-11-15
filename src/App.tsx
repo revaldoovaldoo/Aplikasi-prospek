@@ -1100,6 +1100,13 @@ export default function App() {
             requestDeleteQuoteFile(uploadCompany, uploadQuote, file);
           }
         }}
+        onOpenBuilder={() => {
+          if (!uploadCompany) return;
+          const companyId = uploadCompany.id;
+          setUploadTarget(null);
+          setDrawerId(null);
+          setQuoteBuilderId(companyId);
+        }}
       />
 
       <QuoteBuilderDialog

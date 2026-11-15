@@ -13,7 +13,6 @@ import {
   quoteFiles,
   quoteSequence,
   todayISO,
-  yearOf,
 } from "../lib/data";
 import { MAX_PDF_BYTES, pdfUrl, uploadPdf } from "../lib/api";
 import { extractQuoteNumber } from "../lib/pdf";
@@ -117,6 +116,7 @@ interface QuoteUploadProps {
     quoteFile: StoredFile;
   }) => void;
   onDeleteVersion: (file: StoredFile) => void;
+  onOpenBuilder: () => void;
 }
 
 export function QuoteUploadDialog({
@@ -127,6 +127,7 @@ export function QuoteUploadDialog({
   onClose,
   onSave,
   onDeleteVersion,
+  onOpenBuilder,
 }: QuoteUploadProps) {
   const [file, setFile] = useState<File | null>(null);
   const [number, setNumber] = useState("");
@@ -134,7 +135,9 @@ export function QuoteUploadDialog({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [reading, setReading] = useState(false);
-  const [detected, setDetected] = useState(false);
+  const [pdfNumber, setPdfNumber] = useState("");
+  const [numberPinned, setNumberPinned] = useState(false);
+  const pickIdRef = useRef(0);
   const existingFiles = existing ? quoteFiles(existing) : [];
 
   useEffect(() => {
@@ -146,45 +149,52 @@ export function QuoteUploadDialog({
     setError("");
     setBusy(false);
     setReading(false);
-    setDetected(false);
+    setPdfNumber("");
+    setNumberPinned(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, company?.id, existing?.id]);
 
   const pickFile = async (next: File | null) => {
+    const pickId = ++pickIdRef.current;
     setError("");
-    setDetected(false);
+    setNumberPinned(false);
+    setPdfNumber("");
     if (!next) {
       setFile(null);
+      setReading(false);
       return;
     }
     const validation = validatePdf(next);
     if (validation) {
       setError(validation);
       setFile(null);
+      setReading(false);
       return;
     }
     setFile(next);
+    setReading(true);
+    const found = await extractQuoteNumber(next);
+    if (pickIdRef.current !== pickId) return;
+    setReading(false);
+    // Nomor otomatis tetap menjadi nomor utama. Nomor dari PDF hanya
+    // ditampilkan sebagai peringatan agar tidak menimpa urutan 004/005.
+    setPdfNumber(found || "");
+  };
 
-    if (!existing) {
-      setReading(true);
-      const found = await extractQuoteNumber(next);
-      setReading(false);
-      const foundSequence = quoteSequence(found || "");
-      const foundYear = Number(/(\d{4})\s*$/.exec(found || "")?.[1] || 0);
-      const usable =
-        Boolean(found) &&
-        foundSequence > 0 &&
-        foundYear === yearOf(date) &&
-        !isQuoteSequenceUsed(quotes, foundSequence, date);
-      if (usable && found) {
-        // Pakai nomor urut dari PDF, tetapi bulan/tahun mengikuti tanggal
-        // penawaran yang dipilih agar seri tetap konsisten.
-        setNumber(autoQuoteNumber(foundSequence, date));
-        setDetected(true);
-      } else {
-        setNumber(nextAvailableQuoteNumber(quotes, date));
-      }
-    }
+  const pdfSequence = quoteSequence(pdfNumber);
+  const pdfSequenceUsed =
+    pdfSequence > 0 && isQuoteSequenceUsed(quotes, pdfSequence, date);
+  const pdfMismatch =
+    Boolean(file && pdfNumber.trim() && !reading) &&
+    pdfNumber.replace(/\s+/g, "").toLowerCase() !==
+      number.replace(/\s+/g, "").toLowerCase();
+  const canUsePdfNumber = !existing && pdfSequence > 0 && !pdfSequenceUsed;
+
+  const usePdfNumber = () => {
+    if (!canUsePdfNumber) return;
+    setNumber(autoQuoteNumber(pdfSequence, date));
+    setNumberPinned(true);
+    setPdfNumber("");
   };
 
   const submit = async () => {
@@ -235,6 +245,14 @@ export function QuoteUploadDialog({
         <>
           <button type="button" className="btn btn-ghost" onClick={onClose} disabled={busy}>
             Batal
+          </button>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={onOpenBuilder}
+            disabled={busy}
+          >
+            {existing ? "Buat ulang lewat formulir" : "Buat lewat formulir"}
           </button>
           <button type="button" className="btn btn-primary" onClick={() => void submit()} disabled={busy}>
             {busy ? "Mengunggah…" : existing ? "Simpan perubahan" : "Simpan penawaran"}
@@ -301,10 +319,35 @@ export function QuoteUploadDialog({
                 ? "Membaca nomor penawaran dari PDF…"
                 : existing
                   ? "PDF ini akan menjadi versi terbaru; PDF sebelumnya tetap tersimpan di riwayat."
-                  : detected
-                    ? "Nomor terdeteksi otomatis dari PDF. Periksa dan koreksi bila perlu."
-                    : "Nomor diisi otomatis dari nomor urut yang masih tersedia."}
+                  : "Nomor otomatis dari urutan penawaran. Nomor dari PDF tidak menimpa nomor otomatis."}
             </span>
+          ) : null}
+          {pdfMismatch ? (
+            <div className="quote-number-warning" role="alert">
+              <AlertIcon size={16} />
+              <div>
+                <strong>PDF membawa nomor lain</strong>
+                <p>
+                  Nomor di PDF <span className="mono">{pdfNumber}</span>, sedangkan
+                  nomor penawaran tetap <span className="mono">{number}</span>.
+                  Nomor otomatis tidak ditimpa.
+                </p>
+                {existing ? (
+                  <p>
+                    PDF ini akan disimpan sebagai versi baru untuk nomor{" "}
+                    <span className="mono">{existing.number}</span>.
+                  </p>
+                ) : canUsePdfNumber ? (
+                  <button type="button" className="link-btn" onClick={usePdfNumber}>
+                    Gunakan nomor dari PDF
+                  </button>
+                ) : pdfSequence <= 0 ? (
+                  <p>Nomor dari PDF tidak dapat dibaca dengan benar.</p>
+                ) : (
+                  <p>Nomor dari PDF tidak dapat dipakai karena sudah digunakan penawaran lain.</p>
+                )}
+              </div>
+            </div>
           ) : null}
         </div>
 
@@ -316,7 +359,7 @@ export function QuoteUploadDialog({
             placeholder="001/UAS/QUOT-PANE/VII/2026"
             onChange={(event) => {
               setNumber(event.target.value);
-              setDetected(false);
+              setNumberPinned(true);
             }}
             disabled={busy || Boolean(existing)}
           />
@@ -336,9 +379,13 @@ export function QuoteUploadDialog({
             onChange={(event) => {
               const nextDate = event.target.value;
               setDate(nextDate);
-              if (!existing && !detected) {
-                setNumber(nextAvailableQuoteNumber(quotes, nextDate));
+              if (existing) return;
+              if (numberPinned) {
+                const sequence = quoteSequence(number);
+                if (sequence > 0) setNumber(autoQuoteNumber(sequence, nextDate));
+                return;
               }
+              setNumber(nextAvailableQuoteNumber(quotes, nextDate));
             }}
             disabled={busy}
           />
