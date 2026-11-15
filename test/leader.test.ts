@@ -128,6 +128,43 @@ test("AI Leader merangkum semua lokasi yang diproses Tim Robot", () => {
   assert.match(reply, /<b>5<\/b> lead/);
 });
 
+test("AI Leader hanya menghitung lead yang punya telepon atau e-mail", () => {
+  const reply = buildLeaderReply("hotel di kabupaten bogor", {
+    ...locationSnapshot,
+    leads: [
+      ...locationSnapshot.leads,
+      {
+        name: "Hotel Nama Saja",
+        city: "Kab. Bogor",
+        category: "hotel",
+        contactName: "Nama Tanpa Nomor",
+        phone: "",
+        email: "",
+      },
+      {
+        name: "Hotel Email Saja",
+        city: "Kab. Bogor",
+        category: "hotel",
+        contactName: "",
+        phone: "",
+        email: "pic@hotel-email.test",
+      },
+    ],
+  });
+  assert.doesNotMatch(reply, /Hotel Nama Saja/);
+  assert.match(reply, /Hotel Email Saja/);
+  assert.match(reply, /pic@hotel-email\.test/);
+  assert.match(reply, /Ditemukan <b>3<\/b> lead dengan nomor telepon atau e-mail/);
+});
+
+test("AI Leader memfilter cakupan lokasi sesuai kategori yang disebut", () => {
+  const reply = buildLeaderReply("hotel di semua lokasi", locationSnapshot);
+  assert.match(reply, /Cakupan Lokasi Tim Robot · Hotel/);
+  assert.match(reply, /<b>3<\/b> lead hotel/);
+  assert.doesNotMatch(reply, /Sekolah \d/);
+  assert.doesNotMatch(reply, /Perusahaan \d/);
+});
+
 test("AI Leader hanya memicu kirim ulang saat diminta eksplisit", () => {
   assert.equal(isRetryRequest("tolong kirim ulang pesan macet"), true);
   assert.equal(isRetryRequest("berapa prospek saya"), false);

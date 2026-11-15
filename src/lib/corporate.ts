@@ -218,25 +218,14 @@ export function normalizeCompanyName(name: string): string {
     .trim();
 }
 
-/** Cocokkan lead Corporate Engine dengan perusahaan yang sudah diinput. */
-/** Lead hanya boleh masuk Prospek bila semua informasi wajib sudah tervalidasi. */
-export function isCompanyComplete(company: Company): boolean {
-  const latitude = Number(company.latitude);
-  const longitude = Number(company.longitude);
+/** Data minimum yang juga dipakai Kurir Telegram sebelum menulis Prospek. */
+export function isRobotCompanyPublishable(company: Company): boolean {
   return Boolean(
-    company.validationStatus === "verified" &&
-      company.website?.trim() &&
-      company.contactName?.trim() &&
-      company.email?.trim() &&
-      company.picPhone?.trim() &&
-      Number.isFinite(latitude) &&
-      latitude !== 0 &&
-      Number.isFinite(longitude) &&
-      longitude !== 0,
+    company.name?.trim() && company.contactName?.trim() && company.picPhone?.trim(),
   );
 }
 
-/** Buang Prospek yang dibuat robot tetapi informasinya belum lengkap. */
+/** Buang Prospek robot hanya bila data minimum Telegram benar-benar kosong. */
 export function pruneIncompleteRobotCompanies(data: Database): Database {
   const quotedCompanyIds = new Set(
     data.quotes.filter((quote) => quote.quoteFile).map((quote) => quote.companyId),
@@ -245,7 +234,7 @@ export function pruneIncompleteRobotCompanies(data: Database): Database {
     const fromRobot =
       Boolean(company.sourceLeadId) || /robot ai/i.test(company.source ?? "");
     if (!fromRobot) return true;
-    return isCompanyComplete(company) || quotedCompanyIds.has(company.id);
+    return isRobotCompanyPublishable(company) || quotedCompanyIds.has(company.id);
   });
   return companies.length === data.companies.length ? data : { ...data, companies };
 }
@@ -270,6 +259,13 @@ export function isLeadComplete(lead: CorporateLead): boolean {
       latitude !== 0 &&
       Number.isFinite(longitude) &&
       longitude !== 0,
+  );
+}
+
+/** Lead yang sudah memenuhi syarat Telegram boleh disinkronkan ke Prospek. */
+export function isLeadPublishable(lead: CorporateLead): boolean {
+  return Boolean(
+    lead.name?.trim() && lead.contactName?.trim() && lead.phone?.trim(),
   );
 }
 
@@ -341,7 +337,7 @@ export function syncRobotCompanies(
   data: Database,
   leads: CorporateLead[],
 ): Database {
-  const complete = leads.filter(isLeadComplete);
+  const complete = leads.filter(isLeadPublishable);
   if (complete.length === 0) return data;
 
   const matched = new Map<string, CorporateLead>();

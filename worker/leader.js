@@ -637,7 +637,8 @@ function whatsappUrl(value) {
 }
 
 function leadHasContact(lead) {
-  return Boolean(clean(lead.contactName) || clean(lead.phone) || clean(lead.email));
+  // Nama PIC tanpa nomor/e-mail belum bisa dihubungi langsung.
+  return Boolean(clean(lead.phone) || clean(lead.email));
 }
 
 function leadContactLine(lead) {
@@ -664,27 +665,39 @@ function leadCoverageRows(leads) {
     if (!city) continue;
     let row = cities.get(city);
     if (!row) {
-      row = { city, total: 0, withContact: 0, hotel: 0, school: 0, company: 0 };
+      row = { city, total: 0, hotel: 0, school: 0, company: 0 };
       cities.set(city, row);
     }
     row.total += 1;
-    if (leadHasContact(lead)) row.withContact += 1;
     if (row[lead.category] !== undefined) row[lead.category] += 1;
   }
   return [...cities.values()];
 }
 
-function leadCoverageReply(leads) {
-  const rows = leadCoverageRows(leads);
+function leadCoverageReply(leads, categories = new Set()) {
+  const categoryOrder =
+    categories.size > 0 ? [...categories] : ["hotel", "school", "company"];
+  const selected = leads.filter(
+    (lead) =>
+      leadHasContact(lead) &&
+      (categories.size === 0 || categories.has(lead.category)),
+  );
+  const rows = leadCoverageRows(selected);
+  const categoryTitle = categoryOrder.map(leadCategoryLabel).join(" & ");
+  const scope = categories.size ? `${categoryTitle.toLowerCase()} ` : "";
   const lines = [
-    "<b>AI Leader · Cakupan Lokasi Tim Robot</b>",
+    `<b>AI Leader · Cakupan Lokasi Tim Robot${categories.size ? ` · ${categoryTitle}` : ""}</b>`,
     "",
-    `Ada <b>${count(leads.length)}</b> lead dari ${count(rows.length)} lokasi di Corporate Engine.`,
+    `Ada <b>${count(selected.length)}</b> lead ${scope}yang bisa dihubungi dari ${count(rows.length)} lokasi di Corporate Engine.`,
   ];
+  if (rows.length === 0) {
+    lines.push("", `Belum ada lead ${categoryTitle.toLowerCase()} yang punya nomor telepon atau e-mail.`);
+    return lines.join("\n");
+  }
   for (const row of rows) {
     lines.push(
-      `• <b>${escapeHtml(row.city)}</b> — ${count(row.total)} lead, ${count(row.withContact)} punya kontak PIC`,
-      `  Hotel ${count(row.hotel)} · Sekolah ${count(row.school)} · Perusahaan ${count(row.company)}`,
+      `• <b>${escapeHtml(row.city)}</b> — ${count(row.total)} lead bisa dihubungi`,
+      `  ${categoryOrder.map((category) => `${leadCategoryLabel(category)} ${count(row[category])}`).join(" · ")}`,
     );
   }
   lines.push(
@@ -704,16 +717,16 @@ function locationReply(snapshot, text) {
   const coverageQuestion =
     /(lokasi|daerah|wilayah|cakupan)/.test(message) &&
     /(apa saja|semua|daftar|tersedia|proses|robot|tim|lead|prospek|mana)/.test(message);
+  const categories = leadCategoriesIn(message);
   const cities = matchedLeadCities(leads, message);
   if (cities.length === 0) {
-    return coverageQuestion ? leadCoverageReply(leads) : "";
+    return coverageQuestion ? leadCoverageReply(leads, categories) : "";
   }
 
   // Pertanyaan strategis tetap dijawab model; daftar konkret dijawab data.
   if (/(strategi|analisis|analisa|peluang|bandingkan|prediksi|menurut|pendapat|risiko)/.test(message)) {
     return "";
   }
-  const categories = leadCategoriesIn(message);
   const asksList =
     /(nama|daftar|berikan|kasih|minta|sebutkan|siapa|apa saja|contoh|lead|prospek|pic|kontak|nomor|telepon|komunikasi|hubungi|langsung|berapa|jumlah|total|untuk|kabupaten|kota|daerah|wilayah)/.test(
       message,
@@ -736,13 +749,14 @@ function locationReply(snapshot, text) {
   }
 
   const seen = new Set();
-  const unique = filtered.filter((lead) => {
-    const key = `${normalizeText(lead.name)}|${selectPicPhone(lead.phone).replace(/\D/g, "")}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-  const withContact = unique.filter(leadHasContact);
+  const unique = filtered
+    .filter(leadHasContact)
+    .filter((lead) => {
+      const key = `${normalizeText(lead.name)}|${selectPicPhone(lead.phone).replace(/\D/g, "")}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
   const categoryOrder =
     categories.size > 0 ? [...categories] : ["hotel", "school", "company"];
   const title =
@@ -752,26 +766,18 @@ function locationReply(snapshot, text) {
   const lines = [
     `<b>AI Leader · ${title} — ${escapeHtml(cities.join(" + "))}</b>`,
     "",
-    `Ditemukan <b>${count(unique.length)}</b> lead; <b>${count(withContact.length)}</b> sudah punya kontak PIC.`,
+    `Ditemukan <b>${count(unique.length)}</b> lead dengan nomor telepon atau e-mail.`,
   ];
   for (const category of categoryOrder) {
     const all = unique.filter((lead) => lead.category === category);
     if (all.length === 0) continue;
-    const contactable = withContact.filter(
-      (lead) => lead.category === category,
-    ).length;
-    lines.push(
-      `• ${leadCategoryLabel(category)}: ${count(all.length)} lead, ${count(contactable)} punya kontak PIC`,
-    );
+    lines.push(`• ${leadCategoryLabel(category)}: ${count(all.length)} lead`);
   }
   lines.push("");
 
-  if (withContact.length === 0) {
-    lines.push("Belum ada nama/nomor PIC tersimpan untuk wilayah ini. Nama lead yang ada:");
-    unique.slice(0, 10).forEach((lead) => {
-      lines.push(`• ${escapeHtml(lead.name)} — ${leadCategoryLabel(lead.category)}`);
-    });
-    lines.push("", "Lengkapi kontak lewat panel Corporate Engine agar bisa dihubungi langsung.");
+  if (unique.length === 0) {
+    lines.push("Belum ada lead dengan nomor telepon atau e-mail di wilayah ini.");
+    lines.push("Lengkapi kontak lewat panel Corporate Engine agar bisa dihubungi langsung.");
     return lines.join("\n");
   }
 
@@ -779,7 +785,7 @@ function locationReply(snapshot, text) {
   const perCategory = categories.size === 1 ? 10 : 4;
   let displayed = 0;
   for (const category of categoryOrder) {
-    const group = withContact
+    const group = unique
       .filter((lead) => lead.category === category)
       .sort((a, b) => {
         const score = (lead) =>
@@ -800,8 +806,8 @@ function locationReply(snapshot, text) {
       lines.push(`  ${leadContactLine(lead)}`);
     }
   }
-  if (withContact.length > displayed) {
-    lines.push("", `Menampilkan sebagian kontak. Total ${count(withContact.length)} lead punya kontak PIC.`);
+  if (unique.length > displayed) {
+    lines.push("", `Menampilkan sebagian kontak. Total ${count(unique.length)} lead punya nomor atau e-mail.`);
   }
   lines.push(
     "",
@@ -921,7 +927,7 @@ function compactSnapshot(snapshot) {
     outbox: snapshot.outbox || emptyOutbox(),
     lastRun: snapshot.lastRun,
     lastRunAt: snapshot.lastRunAt,
-    leadCoverage: leadCoverageRows(leads),
+    leadCoverage: leadCoverageRows(leads.filter(leadHasContact)),
     leadSamples,
     companies: companies.slice(0, 300).map((company) => ({
       name: company.name,
