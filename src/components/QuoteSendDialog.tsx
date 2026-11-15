@@ -9,7 +9,7 @@ import {
   MailIcon,
   WhatsappIcon,
 } from "./icons";
-import { pdfUrl } from "../lib/api";
+import { downloadUrl, pdfUrl } from "../lib/api";
 import { formatFileSize, formatShortDate } from "../lib/data";
 import {
   isValidEmail,
@@ -46,7 +46,7 @@ type ShareNavigator = Navigator & {
 
 function triggerDownload(quote: UploadedQuoteInfo) {
   const anchor = document.createElement("a");
-  anchor.href = pdfUrl(quote.quoteFile.id);
+  anchor.href = downloadUrl(quote.quoteFile.id);
   anchor.download = quoteFilename(quote.number);
   anchor.style.display = "none";
   document.body.appendChild(anchor);
@@ -84,6 +84,7 @@ export default function QuoteSendDialog({
   const [waPhone, setWaPhone] = useState("");
   const [emailAddress, setEmailAddress] = useState("");
   const [notice, setNotice] = useState("");
+  const [popupBlocked, setPopupBlocked] = useState(false);
   const [canShare, setCanShare] = useState(false);
 
   useEffect(() => {
@@ -93,6 +94,7 @@ export default function QuoteSendDialog({
     setWaPhone(company?.picPhone ?? "");
     setEmailAddress(company?.email ?? "");
     setNotice("");
+    setPopupBlocked(false);
     const nav = navigator as ShareNavigator;
     setCanShare(typeof nav.canShare === "function" && typeof nav.share === "function");
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -124,6 +126,7 @@ export default function QuoteSendDialog({
     // dipakai di sini karena tidak bisa memilih nomor PIC secara otomatis.
     const opened = openExternal(whatsappUrl(waPhone, message), true);
     triggerDownload(quote);
+    setPopupBlocked(!opened);
     setNotice(
       opened
         ? `WhatsApp dibuka ke nomor ${waNumber} dengan pesan terisi. PDF sudah diunduh; lampirkan PDF tersebut pada chat PIC.`
@@ -203,7 +206,7 @@ export default function QuoteSendDialog({
               type="button"
               className="btn btn-primary"
               onClick={() => {
-                if (channel === "whatsapp") void sendWhatsApp();
+                if (channel === "whatsapp") sendWhatsApp();
                 else sendEmail();
               }}
             >
@@ -276,6 +279,7 @@ export default function QuoteSendDialog({
               onClick={() => {
                 setChannel("whatsapp");
                 setNotice("");
+                setPopupBlocked(false);
               }}
             >
               <WhatsappIcon size={15} /> WhatsApp
@@ -288,6 +292,7 @@ export default function QuoteSendDialog({
               onClick={() => {
                 setChannel("email");
                 setNotice("");
+                setPopupBlocked(false);
               }}
             >
               <MailIcon size={15} /> E-mail
@@ -305,6 +310,7 @@ export default function QuoteSendDialog({
                 onChange={(event) => {
                   setWaPhone(event.target.value);
                   setNotice("");
+                  setPopupBlocked(false);
                 }}
               />
               <span className="field-hint">
@@ -342,7 +348,7 @@ export default function QuoteSendDialog({
             <pre>{message}</pre>
           </div>
 
-                      <p className="send-note">
+          <p className="send-note">
             <strong>Buka WhatsApp</strong> membuka chat langsung ke nomor PIC dengan pesan
             terisi, lalu PDF diunduh otomatis. WhatsApp tidak mengizinkan situs web
             melampirkan file ke nomor tertentu, jadi lampirkan PDF dari unduhan. Untuk
@@ -367,6 +373,16 @@ export default function QuoteSendDialog({
             <div className="send-notice" role="status">
               <CheckIcon size={14} />
               <span>{notice}</span>
+              {channel === "whatsapp" && popupBlocked && waReady ? (
+                <a
+                  className="link-btn"
+                  href={whatsappUrl(waPhone, message)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  Buka chat manual
+                </a>
+              ) : null}
             </div>
           ) : null}
         </div>
