@@ -1024,6 +1024,13 @@ export function sanitizePicName(value) {
     .trim();
   if (!/\p{L}/u.test(text)) return "";
   text = text.slice(0, 80).trim();
+  if (
+    /\b(?:tidak|belum)\s+(?:disebutkan|diketahui|ada)\b|\bunknown\b|\bn\/?a\b|operator tercatat|data publik/i.test(
+      text,
+    )
+  ) {
+    return "";
+  }
   return text;
 }
 

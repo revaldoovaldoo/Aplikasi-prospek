@@ -24,7 +24,7 @@ function stripPhoneLabel(value) {
 
 export function splitPicPhones(value) {
   return String(value || "")
-    .split(/[;/\r\n]+/)
+    .split(/[;,/\r\n]+/)
     .map((candidate) => stripPhoneLabel(clean(candidate)))
     .filter(Boolean);
 }

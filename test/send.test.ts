@@ -5,6 +5,7 @@ import {
   normalizeWhatsApp,
   whatsappUrl,
 } from "../src/lib/send.ts";
+import { formatPicPhones } from "../worker/phone.js";
 
 test("normalizeWhatsApp memformat nomor PIC tunggal", () => {
   assert.equal(normalizeWhatsApp("0812 3456 7890"), "6281234567890");
@@ -23,6 +24,13 @@ test("normalizeWhatsApp memilih satu nomor saat PIC punya beberapa nomor", () =>
   );
 });
 
+test("formatPicPhones memisahkan beberapa nomor dengan koma", () => {
+  assert.equal(
+    formatPicPhones("+62 260 470911, +62 853 2009 2238", 2),
+    "+62 260 470911 / +62 853 2009 2238",
+  );
+});
+
 test("normalizeWhatsApp menolak nomor gabungan yang tidak bisa dipisahkan", () => {
   assert.equal(normalizeWhatsApp("081234567890081234567891"), "");
   assert.equal(normalizeWhatsApp("08123456789012345"), "");
@@ -33,5 +41,12 @@ test("whatsappUrl mengarah ke nomor PIC yang dipilih", () => {
   assert.equal(
     whatsappUrl("0812 3456 7890 / 021 555 1234", "Halo"),
     "https://wa.me/6281234567890?text=Halo",
+  );
+});
+
+test("whatsappUrl mengarahkan nomor yang diisi ke chat yang benar", () => {
+  assert.equal(
+    whatsappUrl("08567853572", "Pesan penawaran"),
+    "https://wa.me/628567853572?text=Pesan%20penawaran",
   );
 });

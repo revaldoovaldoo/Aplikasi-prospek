@@ -107,49 +107,19 @@ export default function QuoteSendDialog({
   const emailReady = isValidEmail(emailAddress);
   const profileIncomplete = !profile.phone.trim() || !profile.email.trim();
 
-  const sendWhatsApp = async () => {
+  const sendWhatsApp = () => {
     if (!waReady) {
       setNotice("Nomor WhatsApp PIC belum valid. Isi nomor HP/WhatsApp PIC terlebih dahulu.");
       return;
     }
 
-    // Browser tidak mengizinkan wa.me melampirkan file secara otomatis. Bila
-    // Web Share tersedia, kirim PDF + pesan lewat lembar berbagi; pengguna
-    // memilih WhatsApp dan kontak PIC di sana. Di desktop, chat tetap dibuka
-    // ke nomor PIC dan PDF diunduh untuk dilampirkan.
-    const nav = navigator as ShareNavigator;
-    if (nav.canShare && nav.share) {
-      try {
-        const response = await fetch(pdfUrl(quote.quoteFile.id), {
-          credentials: "same-origin",
-        });
-        if (response.ok) {
-          const blob = await response.blob();
-          const file = new File([blob], quoteFilename(quote.number), {
-            type: "application/pdf",
-          });
-          if (nav.canShare({ files: [file] })) {
-            await nav.share({
-              files: [file],
-              title: `Penawaran ${quote.number}`,
-              text: message,
-            });
-            setNotice(
-              "Pilih WhatsApp lalu kontak PIC. PDF penawaran dan pesan sudah disertakan.",
-            );
-            return;
-          }
-        }
-      } catch (error) {
-        if ((error as DOMException | undefined)?.name === "AbortError") return;
-        // Lanjut ke alur unduh + buka chat bila berbagi file gagal.
-      }
-    }
-
-    triggerDownload(quote);
+    // Utamakan nomor PIC: buka chat langsung ke nomor tersebut dengan pesan
+    // yang sudah terisi, lalu unduh PDF untuk dilampirkan. Web Share tidak
+    // dipakai di sini karena tidak bisa memilih nomor PIC secara otomatis.
     openExternal(whatsappUrl(waPhone, message), true);
+    triggerDownload(quote);
     setNotice(
-      `PDF diunduh dan WhatsApp dibuka untuk nomor ${waNumber}. Lampirkan PDF tersebut pada chat PIC.`,
+      `WhatsApp dibuka ke nomor ${waNumber} dengan pesan terisi. PDF sudah diunduh; lampirkan PDF tersebut pada chat PIC.`,
     );
   };
 
@@ -364,16 +334,17 @@ export default function QuoteSendDialog({
             <pre>{message}</pre>
           </div>
 
-          <p className="send-note">
-            Di perangkat yang mendukung, tombol <strong>Buka WhatsApp</strong> membuka lembar
-            berbagi berisi PDF dan pesan—pilih WhatsApp lalu kontak PIC. Di desktop, chat
-            dibuka ke nomor PIC dan PDF diunduh untuk dilampirkan. Browser tidak mengizinkan
-            wa.me melampirkan file secara otomatis ke nomor tertentu.
+                      <p className="send-note">
+            <strong>Buka WhatsApp</strong> membuka chat langsung ke nomor PIC dengan pesan
+            terisi, lalu PDF diunduh otomatis. WhatsApp tidak mengizinkan situs web
+            melampirkan file ke nomor tertentu, jadi lampirkan PDF dari unduhan. Untuk
+            mengirim PDF lewat lembar berbagi, gunakan tombol di bawah lalu pilih WhatsApp
+            dan kontak PIC.
           </p>
 
           {canShare ? (
             <button type="button" className="btn btn-secondary btn-sm" onClick={() => void sharePdf()}>
-              Bagikan PDF langsung
+              Bagikan PDF + pesan
             </button>
           ) : null}
 

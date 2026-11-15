@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  auditProspectTelegramHistory,
   auditTelegramProspects,
   publishLeadToProspect,
   reconcileTelegramProspects,
@@ -222,6 +223,74 @@ test("Audit Telegram menjelaskan lead yang belum masuk Prospek", async () => {
     "Nama PIC kosong.",
     "Nomor PIC kosong atau tidak valid.",
   ]);
+});
+
+function fakeHistoryDb(data: {
+  companies: Record<string, unknown>[];
+  leads: Record<string, unknown>[];
+  jobs: Record<string, unknown>[];
+}) {
+  return {
+    prepare(sql: string) {
+      if (/SELECT payload FROM app_state/.test(sql)) {
+        return {
+          bind: () => ({ first: async () => ({ payload: JSON.stringify({ companies: data.companies }) }) }),
+        };
+      }
+      if (/FROM corporate_leads WHERE id IN/.test(sql)) {
+        return { bind: () => ({ all: async () => ({ results: data.leads }) }) };
+      }
+      if (/FROM corporate_robot_jobs j/.test(sql)) {
+        return { bind: () => ({ all: async () => ({ results: data.jobs }) }) };
+      }
+      const chain = {
+        bind: () => chain,
+        run: async () => ({ meta: { changes: 1 } }),
+        all: async () => ({ results: [] }),
+        first: async () => null,
+      };
+      return chain;
+    },
+  };
+}
+
+test("Audit terbalik memisahkan Prospek lama dan antrean yang tidak sinkron", async () => {
+  const db = fakeHistoryDb({
+    companies: [
+      { id: "co_sent", name: "Terkirim", sourceLeadId: "sent", source: "Corporate Engine · Robot AI" },
+      { id: "co_pending", name: "Tertunda", sourceLeadId: "pending", source: "Corporate Engine · Robot AI" },
+      { id: "co_no_note", name: "Tanpa Catatan", sourceLeadId: "done", source: "Corporate Engine · Robot AI" },
+      { id: "co_no_source", name: "Tanpa Sumber", source: "Corporate Engine · Robot AI" },
+      { id: "co_missing", name: "Lead Hilang", sourceLeadId: "missing", source: "Corporate Engine · Robot AI" },
+      { id: "co_manual", name: "Manual", source: "Corporate Engine · Manual" },
+    ],
+    leads: [
+      { id: "sent", name: "Terkirim" },
+      { id: "pending", name: "Tertunda" },
+      { id: "done", name: "Tanpa Catatan" },
+    ],
+    jobs: [
+      { lead_id: "sent", stage: "done", telegram_sent_at: "2026-11-15T00:00:00Z", outbox_status: "sent" },
+      { lead_id: "pending", stage: "publish_telegram", telegram_sent_at: "", outbox_status: "pending" },
+      { lead_id: "done", stage: "done", telegram_sent_at: "", outbox_status: "" },
+      { lead_id: "missing", stage: "done", telegram_sent_at: "", outbox_status: "" },
+    ],
+  });
+  const audit = await auditProspectTelegramHistory(db, "owner-1");
+  assert.equal(audit?.totalProspects, 6);
+  assert.equal(audit?.robotCompanies, 5);
+  assert.equal(audit?.manualCompanies, 1);
+  assert.equal(audit?.withTelegram, 1);
+  assert.equal(audit?.withoutTelegram, 4);
+  assert.deepEqual(audit?.categories, {
+    "tanpa-source": 1,
+    "lead-hilang": 1,
+    "job-hilang": 0,
+    "antrean-telegram": 1,
+    "perlu-ditinjau": 0,
+    "tanpa-catatan": 1,
+    "belum-terkirim": 0,
+  });
 });
 
 test("Rekonsiliasi hanya memasukkan lead terkirim yang memenuhi syarat", async () => {

@@ -46,4 +46,8 @@ test("sanitizePicName menolak nama yang tidak valid", () => {
   assert.equal(sanitizePicName("info@example.com"), "");
   assert.equal(sanitizePicName("https://example.com"), "");
   assert.equal(sanitizePicName("personVerified:{citations:[]}"), "");
+  assert.equal(
+    sanitizePicName("Tidak disebutkan dalam data publik Operator tercatat kosong"),
+    "",
+  );
 });

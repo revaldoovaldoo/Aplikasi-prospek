@@ -26,8 +26,9 @@ akun Freebuff (D1 + R2), sehingga bisa dibuka dari komputer maupun tablet.
    Pesan memakai nama perusahaan dan nomor penawaran, ditandatangani dengan
    username, nomor WhatsApp, dan e-mail dari profil. Nomor PIC dan e-mail PIC
    terisi otomatis dari data perusahaan dan masih bisa diubah sebelum dikirim.
-   PDF diunduh otomatis untuk dilampirkan; di ponsel tombol **Bagikan PDF**
-   memasukkan lampiran sekaligus.
+   PDF diunduh otomatis untuk dilampirkan. Tombol **Buka WhatsApp** membuka
+   chat langsung ke nomor PIC dengan pesan terisi; tombol **Bagikan PDF + pesan**
+   tersedia bila ingin mengirim lampiran lewat lembar berbagi perangkat.
 5. **Report penawaran** — daftar nomor penawaran dari PDF yang diunggah beserta
    perusahaan, tanggal, status, dan tautan PDF-nya.
 6. **Cancel** — klik perusahaan yang belum punya PO, lalu tekan

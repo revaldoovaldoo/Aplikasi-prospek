@@ -1207,6 +1207,13 @@ function isRobotCompanyRecord(company) {
   );
 }
 
+function isRobotProspectCompany(company) {
+  return (
+    Boolean(clean(company?.sourceLeadId)) ||
+    /robot ai|^corporate engine$/i.test(clean(company?.source))
+  );
+}
+
 async function readProspectCompanies(db, ownerId) {
   const row = await db
     .prepare("SELECT payload FROM app_state WHERE user_id = ?")
@@ -1265,6 +1272,7 @@ export async function auditTelegramProspects(db, ownerId) {
       notEligible: sent.length,
       eligibleLeadIds: [],
       reasons: sent.map((row) => ({
+        leadId: clean(row.lead_id),
         name: clean(row.name) || "Tanpa nama",
         reason: "Data Prospek pemilik robot tidak tersedia atau tidak dapat dibaca.",
       })),
@@ -1299,11 +1307,17 @@ export async function auditTelegramProspects(db, ownerId) {
     } else if (row.job_stage === "publish_prospect") {
       queued += 1;
       continue;
-    } else if (row.job_stage === "paused" && Number(row.job_attempts) >= 3) {
+    } else if (
+      row.job_stage === "paused" &&
+      Number(row.job_attempts) >= 3 &&
+      /prospek|data akun|terlalu besar|batas jumlah|berubah saat robot/i.test(
+        clean(row.job_last_error),
+      )
+    ) {
       reason = clean(row.job_last_error) || "Robot berhenti setelah 3 percobaan.";
     }
     if (reason) {
-      reasons.push({ name: name || "Tanpa nama", reason });
+      reasons.push({ leadId, name: name || "Tanpa nama", reason });
     } else {
       eligibleLeadIds.push(leadId);
     }
@@ -1316,6 +1330,113 @@ export async function auditTelegramProspects(db, ownerId) {
     notEligible: reasons.length,
     eligibleLeadIds,
     reasons,
+  };
+}
+
+/**
+ * Audit arah sebaliknya: Prospek robot yang tidak punya catatan Telegram
+ * terkirim. Hasilnya membedakan data lama, antrean yang belum selesai, dan
+ * Prospek yang ditulis tanpa catatan pengiriman.
+ */
+export async function auditProspectTelegramHistory(db, ownerId) {
+  if (!ownerId) return null;
+  const companies = await readProspectCompanies(db, ownerId);
+  if (!companies) return null;
+  const robotCompanies = companies.filter(isRobotProspectCompany);
+  const sourceIds = [
+    ...new Set(robotCompanies.map((company) => clean(company.sourceLeadId)).filter(Boolean)),
+  ];
+  const leadMap = new Map();
+  const jobMap = new Map();
+  if (sourceIds.length > 0) {
+    const placeholders = sourceIds.map(() => "?").join(", ");
+    const [leadRows, jobRows] = await Promise.all([
+      db
+        .prepare(`SELECT id, name FROM corporate_leads WHERE id IN (${placeholders})`)
+        .bind(...sourceIds)
+        .all(),
+      db
+        .prepare(
+          `SELECT j.lead_id, j.stage, j.status, j.telegram_sent_at, j.published_at,
+                  o.status AS outbox_status, o.sent_at AS outbox_sent_at
+           FROM corporate_robot_jobs j
+           LEFT JOIN corporate_telegram_outbox o
+             ON o.lead_id = j.lead_id AND o.message_type = ?
+           WHERE j.lead_id IN (${placeholders})`,
+        )
+        .bind(TELEGRAM_MESSAGE_TYPE, ...sourceIds)
+        .all(),
+    ]);
+    for (const row of leadRows.results ?? []) leadMap.set(clean(row.id), row);
+    for (const row of jobRows.results ?? []) jobMap.set(clean(row.lead_id), row);
+  }
+
+  const categories = {
+    "tanpa-source": 0,
+    "lead-hilang": 0,
+    "job-hilang": 0,
+    "antrean-telegram": 0,
+    "perlu-ditinjau": 0,
+    "tanpa-catatan": 0,
+    "belum-terkirim": 0,
+  };
+  const items = [];
+  let withTelegram = 0;
+  for (const company of robotCompanies) {
+    const sourceLeadId = clean(company.sourceLeadId);
+    const lead = sourceLeadId ? leadMap.get(sourceLeadId) : null;
+    const job = sourceLeadId ? jobMap.get(sourceLeadId) : null;
+    const outboxStatus = clean(job?.outbox_status);
+    const hasTelegram = Boolean(clean(job?.telegram_sent_at) || outboxStatus === "sent");
+    if (hasTelegram) {
+      withTelegram += 1;
+      continue;
+    }
+    let category = "belum-terkirim";
+    let reason = "Job robot belum mencapai tahap pengiriman Telegram.";
+    if (!sourceLeadId) {
+      category = "tanpa-source";
+      reason = "Prospek robot tidak menyimpan sourceLeadId, sehingga tidak bisa dicocokkan dengan riwayat Telegram.";
+    } else if (!lead) {
+      category = "lead-hilang";
+      reason = "Lead sumber tidak ditemukan; kemungkinan Prospek lama atau lead sudah dihapus.";
+    } else if (!job) {
+      category = "job-hilang";
+      reason = "Job robot tidak ditemukan; kemungkinan Prospek lama atau dibuat di luar antrean robot.";
+    } else if (["pending", "sending", "failed", "uncertain"].includes(outboxStatus)) {
+      category = "antrean-telegram";
+      reason = `Antrean Telegram masih berstatus ${outboxStatus}; pesan belum tercatat terkirim.`;
+    } else if (!outboxStatus) {
+      category = "tanpa-catatan";
+      reason = "Job robot ada, tetapi tidak ada catatan outbox Telegram.";
+    } else if (["done", "publish_prospect", "publish"].includes(clean(job.stage))) {
+      if (outboxStatus) {
+        category = "perlu-ditinjau";
+        reason = `Antrean Telegram berstatus ${outboxStatus}; hasil pengiriman belum dapat dipastikan.`;
+      } else {
+        category = "tanpa-catatan";
+        reason = "Job atau Prospek sudah selesai, tetapi tidak ada catatan Telegram terkirim.";
+      }
+    }
+    categories[category] += 1;
+    items.push({
+      name: clean(company.name),
+      sourceLeadId,
+      leadName: clean(lead?.name),
+      stage: clean(job?.stage),
+      outboxStatus,
+      category,
+      reason,
+    });
+  }
+  return {
+    totalProspects: companies.length,
+    robotCompanies: robotCompanies.length,
+    manualCompanies: companies.length - robotCompanies.length,
+    withTelegram,
+    withoutTelegram: items.length,
+    categories,
+    items,
   };
 }
 
@@ -1951,6 +2072,18 @@ export async function getRobotStatus(db, env = {}, ownerId = "") {
       error instanceof Error ? error.message : "unknown error",
     );
   }
+  let prospectHistory = null;
+  try {
+    prospectHistory = await auditProspectTelegramHistory(
+      db,
+      ownerId || settings?.owner_id || "",
+    );
+  } catch (error) {
+    console.error(
+      "corporate_robot_prospect_history_error",
+      error instanceof Error ? error.message : "unknown error",
+    );
+  }
   // Kirim beberapa nama per tim, bukan satu daftar campuran, agar halaman
   // Robot AI bisa menampilkan pekerjaan Finding, Klarifikasi, dan Publish
   // sesuai urutan timnya tanpa kehilangan salah satu tim. Lead yang sudah
@@ -2050,6 +2183,7 @@ export async function getRobotStatus(db, env = {}, ownerId = "") {
     stats,
     outbox,
     prospectSync,
+    prospectHistory,
     jobs,
     notes,
   };
