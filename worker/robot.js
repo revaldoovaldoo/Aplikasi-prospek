@@ -20,6 +20,7 @@ import {
   readPublicText,
   resolveLeadCoordinates,
   rowToLead,
+  isPicRole,
   sanitizePicName,
 } from "./corporate.js";
 import { researchCorporateLead } from "./research.js";
@@ -1078,10 +1079,15 @@ async function flushTelegramOutbox(db, env, settings, limit = 2, onlyId = "") {
 }
 
 function telegramLeadReady(lead) {
-  // Telegram hanya mensyaratkan nama PIC dan minimal satu nomor PIC valid.
-  // E-mail dan website boleh kosong; koordinat selalu diisi dari entitas
-  // atau pusat wilayah oleh resolveLeadCoordinates.
-  return Boolean(sanitizePicName(lead.contactName) && validPicPhone(lead.phone));
+  // Telegram hanya mensyaratkan nama PIC yang lolos gate, peran yang bukan
+  // resepsionis/customer service, dan minimal satu nomor PIC valid. E-mail dan
+  // website boleh kosong; koordinat selalu diisi dari entitas atau pusat
+  // wilayah oleh resolveLeadCoordinates.
+  return Boolean(
+    sanitizePicName(lead.contactName) &&
+      isPicRole(lead.contactRole) &&
+      validPicPhone(lead.phone),
+  );
 }
 
 function prospectLeadReady(lead) {
@@ -2154,7 +2160,7 @@ export async function getRobotStatus(db, env = {}, ownerId = "") {
     "Publish dipisah menjadi dua stage: publish_telegram hanya mengirim pesan, publish_prospect hanya menulis daftar Prospek. Telegram dikirim satu kali setelah Klarifikasi menerima lead, tanpa perlu membuka aplikasi.",
   );
   notes.push(
-    "Telegram hanya mewajibkan nama PIC dan minimal satu nomor PIC valid. Sampai dua nomor (kontak perusahaan dan nomor PIC) ditampilkan pada baris Nomor PIC. E-mail atau website yang kosong memakai placeholder; koordinat selalu diisi dari titik entitas atau pusat wilayah lead. Pesan tetap tujuh baris.",
+    "Telegram mewajibkan nama PIC yang lolos gate (bukan resepsionis/customer service, bukan placeholder, bukan beberapa nama), peran yang bukan resepsionis/customer service, dan minimal satu nomor PIC valid. Sampai dua nomor (kontak perusahaan dan nomor PIC) ditampilkan pada baris Nomor PIC. E-mail atau website yang kosong memakai placeholder; koordinat selalu diisi dari titik entitas atau pusat wilayah lead. Pesan tetap tujuh baris.",
     "Penulis Prospek memakai syarat yang sama dengan Kurir Telegram: lead yang sudah terkirim langsung ditambahkan ke Prospek meski e-mail atau website belum tersedia.",
   );
 

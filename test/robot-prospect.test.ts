@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   auditProspectTelegramHistory,
   auditTelegramProspects,
+  buildTelegramMessage,
   publishLeadToProspect,
   reconcileTelegramProspects,
 } from "../worker/robot.js";
@@ -10,6 +11,47 @@ import {
   isLeadPublishable,
   pruneIncompleteRobotCompanies,
 } from "../src/lib/corporate.ts";
+
+test("Kurir Telegram menolak nama resepsionis, placeholder, dan beberapa nama", () => {
+  const base = {
+    name: "Hotel Contoh",
+    city: "Jakarta",
+    category: "hotel",
+    phone: "08123456789",
+  };
+  assert.equal(
+    buildTelegramMessage({
+      ...base,
+      contactName: "Wulan Staf Resepsionis",
+      contactRole: "Staf Resepsionis",
+    }),
+    "",
+  );
+  assert.equal(
+    buildTelegramMessage({
+      ...base,
+      contactName: "Tidak tersedia Operator Chintya Dwi Putri",
+      contactRole: "Operator",
+    }),
+    "",
+  );
+  assert.equal(
+    buildTelegramMessage({
+      ...base,
+      contactName: "Rilla Amelia, Shanti Triharti Utami",
+      contactRole: "Sales Manager",
+    }),
+    "",
+  );
+  assert.match(
+    buildTelegramMessage({
+      ...base,
+      contactName: "Budi Santoso",
+      contactRole: "IT Manager",
+    }),
+    /Nama PIC : Budi Santoso/,
+  );
+});
 
 function fakeStateDb(data: Record<string, unknown>) {
   const state = {

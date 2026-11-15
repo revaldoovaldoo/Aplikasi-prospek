@@ -591,7 +591,9 @@ export function corporateLeadMissing(lead) {
   const missing = [];
   if (lead.validationStatus !== "verified") missing.push("validasi panel AI");
   if (!lead.website) missing.push("website");
-  if (!sanitizePicName(lead.contactName)) missing.push("nama PIC");
+  if (!sanitizePicName(lead.contactName) || !isPicRole(lead.contactRole)) {
+    missing.push("nama PIC");
+  }
   if (!lead.email) missing.push("e-mail PIC");
   if (!lead.phone) missing.push("nomor PIC");
   const coordinate = resolveLeadCoordinates(lead);
@@ -1005,6 +1007,44 @@ function htmlToLines(html) {
     .filter(Boolean);
 }
 
+const PIC_PLACEHOLDER_RE =
+  /\b(?:tidak\s+(?:tersedia|disebutkan|diketahui|ada|bernama)|belum\s+(?:diketahui|ada)|unknown|n\/?a|data(?:\s+tahun)?|pada\s+data|historis|disebut\s+sebagai|tanpa\s+nama|operator\s+tercatat|data\s+publik)\b/i;
+const PIC_LABEL_RE =
+  /\b(?:resepsionis|receptionist|front\s*desk|front\s*office|customer\s*service|layanan\s+pelanggan|call\s*center|operator|admin(?:istrasi)?|sekretariat|security|satpam|office\s*boy|pic|kontak\s*person|contact\s*person)\b/i;
+const PIC_ROLE_IN_NAME_RE =
+  /\b(?:general\s+manager|manager|manajer|direktur|director|kepala|rektor|rector|camat|duta\s+besar|ambassador|ceo|cto|founder|pendiri|owner|pemilik|hr|human\s+resources|sales|marketing|finance|operational|operation|assistant|supervisor|koordinator|coordinator|staff|staf|specialist|engineer|teknisi|support)\b/i;
+const PIC_ORG_RE =
+  /\b(?:pt|cv|tbk|persero|yayasan|sekolah|school|sma|smk|smp|sd|mi|mts|ma|universitas|university|institut|kampus|hotel|resort|apartemen|apartment|kantor|kecamatan|kedutaan|embassy|office)\b/i;
+const PIC_HONORIFIC_RE =
+  /^(?:ustadz|ustad|kiai|kh|hj|h|prof|dr|drs|dra|ir|bapak|ibu|pak|bu|mr|mrs|ms)\.?\s+/i;
+const PIC_DEGREE_RE =
+  /(?:,\s*)?\b(?:s\.?kom|s\.?t|m\.?kom|m\.?t|m\.?sc|m\.?pd|m\.?m|mba|ph\.?d|l\.?c|gr|s\.?th\.?i|s\.?e|s\.?pd|s\.?si|s\.?h|s\.?ab|a\.?md|drs|dra|ir)\.?\b/gi;
+const NON_PIC_ROLE_RE =
+  /\b(?:resepsionis|receptionist|front\s*desk|front\s*office|customer\s*service|layanan\s+pelanggan|call\s*center|operator|admin(?:istrasi)?|sekretariat|security|satpam|office\s*boy|human\s+resources|hr)\b/i;
+
+function personLikePart(value) {
+  const words = clean(value).split(/\s+/).filter(Boolean);
+  if (words.length < 1) return false;
+  if (!words.every((word) => /^[A-Z][\p{L}'’.-]*$/u.test(word))) return false;
+  return !words.some((word) =>
+    GENERIC_NAME_WORDS.has(word.replace(/[^\p{L}]/gu, "").toLowerCase()),
+  );
+}
+
+function hasMultipleNames(value) {
+  const parts = clean(value)
+    .split(/\s*(?:,|&|\/|\bdan\b|\bserta\b)\s*/i)
+    .map(clean)
+    .filter(Boolean);
+  return parts.filter(personLikePart).length > 1;
+}
+
+/** Peran yang jelas bukan PIC, seperti resepsionis atau customer service. */
+export function isPicRole(value) {
+  const role = clean(value);
+  return !role || !NON_PIC_ROLE_RE.test(role);
+}
+
 /**
  * Membersihkan nama PIC dari sisa JSON/HTML/sumber riset sebelum ditampilkan
  * atau dikirim. Nama yang benar-benar kosong setelah dibersihkan akan
@@ -1018,6 +1058,9 @@ export function sanitizePicName(value) {
     .replace(/<[^>]*>/g, " ")
     .replace(/^(?:nama(?:\s+pic)?|name|pic|kontak person|contact person|contact)\s*[:\-–—]\s*/i, "")
     .replace(/[|•·].*$/, " ")
+    .replace(PIC_HONORIFIC_RE, "")
+    .replace(PIC_DEGREE_RE, " ")
+    .replace(/[\s,;:.–—-]+$/g, "")
     .replace(/[^\p{L}\p{M}'’.,\-\s]/gu, " ")
     .replace(/\s+/g, " ")
     .replace(/^[\s,;:–—-]+|[\s,;:–—-]+$/g, "")
@@ -1025,9 +1068,11 @@ export function sanitizePicName(value) {
   if (!/\p{L}/u.test(text)) return "";
   text = text.slice(0, 80).trim();
   if (
-    /\b(?:tidak|belum)\s+(?:disebutkan|diketahui|ada)\b|\bunknown\b|\bn\/?a\b|operator tercatat|data publik/i.test(
-      text,
-    )
+    PIC_PLACEHOLDER_RE.test(text) ||
+    PIC_LABEL_RE.test(text) ||
+    PIC_ROLE_IN_NAME_RE.test(text) ||
+    PIC_ORG_RE.test(text) ||
+    hasMultipleNames(text)
   ) {
     return "";
   }
