@@ -29,6 +29,9 @@ akun Freebuff (D1 + R2), sehingga bisa dibuka dari komputer maupun tablet.
    PDF diunduh otomatis untuk dilampirkan. Tombol **Buka WhatsApp** membuka
    chat langsung ke nomor PIC dengan pesan terisi; tombol **Bagikan PDF + pesan**
    tersedia bila ingin mengirim lampiran lewat lembar berbagi perangkat.
+   Jika PIC sudah membalas ke nomor bisnis dalam 24 jam terakhir, tombol berubah
+   menjadi **Kirim PDF otomatis** dan PDF dikirim lewat WhatsApp Cloud API tanpa
+   perlu melampirkan manual.
 5. **Report penawaran** — daftar nomor penawaran dari PDF yang diunggah beserta
    perusahaan, tanggal, status, dan tautan PDF-nya.
 6. **Cancel** — klik perusahaan yang belum punya PO, lalu tekan
@@ -135,6 +138,18 @@ dalam file proyek:
   akan disimpan ke pengaturan robot.
 - `TELEGRAM_TARGET_PHONE` — opsional, default `+6285156590261` untuk label target.
 - `ROBOT_CRON_SECRET` — mengaktifkan endpoint cron. Buat nilai acak yang panjang.
+- `WHATSAPP_ACCESS_TOKEN` — token akses WhatsApp Cloud API untuk mengirim PDF.
+- `WHATSAPP_PHONE_NUMBER_ID` — ID nomor bisnis dari dashboard Meta.
+- `WHATSAPP_APP_SECRET` — App Secret Meta untuk memverifikasi tanda tangan webhook.
+- `WHATSAPP_VERIFY_TOKEN` — nilai acak yang Anda isi juga saat mengatur webhook.
+- `WHATSAPP_API_VERSION` — opsional, default `v23.0`.
+
+  Atur webhook Meta ke `https://<domain-site>/api/whatsapp/webhook`, berlangganan
+  event `messages`, lalu masukkan verify token yang sama. Kirim otomatis hanya
+  berjalan setelah PIC mengirim pesan ke nomor bisnis dalam 24 jam terakhir;
+  kontak pertama tetap manual. Service message pertama 1.000 per nomor per bulan
+  gratis menurut ketentuan Meta, sedangkan template marketing berbayar tidak
+  dipakai oleh alur ini.
 
 **Pemicu 24/7.** Worker tidak hidup terus-menerus. Halaman Robot AI dan Corporate
 Engine menjalankan heartbeat saat dibuka, dan tombol **Jalankan sekarang**

@@ -418,6 +418,85 @@ export function downloadUrl(fileId: string): string {
   return `${pdfUrl(fileId)}?download=1`;
 }
 
+export interface WhatsAppWindowStatus {
+  configured: boolean;
+  webhookConfigured: boolean;
+  phone: string;
+  open: boolean;
+  lastInboundAt: string;
+  expiresAt: string;
+}
+
+export interface WhatsAppSendInput {
+  fileId: string;
+  phone: string;
+  filename: string;
+  message: string;
+}
+
+export interface WhatsAppSendResult {
+  ok: boolean;
+  messageId?: string;
+  to?: string;
+  error?: string;
+  windowOpen?: boolean;
+}
+
+export async function fetchWhatsAppStatus(phone: string): Promise<WhatsAppWindowStatus> {
+  const response = await fetch(`/api/whatsapp/status?phone=${encodeURIComponent(phone)}`, {
+    credentials: "same-origin",
+    headers: { Accept: "application/json" },
+  });
+  const body = await readJson(response);
+  if (!response.ok) {
+    throw new ApiError(
+      response.status,
+      response.status === 401
+        ? "Sesi berakhir."
+        : typeof body?.error === "string"
+          ? body.error
+          : "Status WhatsApp belum bisa dimuat.",
+    );
+  }
+  return {
+    configured: Boolean(body?.configured),
+    webhookConfigured: Boolean(body?.webhookConfigured),
+    phone: typeof body?.phone === "string" ? body.phone : "",
+    open: Boolean(body?.open),
+    lastInboundAt: typeof body?.lastInboundAt === "string" ? body.lastInboundAt : "",
+    expiresAt: typeof body?.expiresAt === "string" ? body.expiresAt : "",
+  };
+}
+
+export async function sendQuoteWhatsApp(
+  input: WhatsAppSendInput,
+): Promise<WhatsAppSendResult> {
+  const response = await fetch("/api/whatsapp/send", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  const body = await readJson(response);
+  if (!response.ok) {
+    throw new ApiError(
+      response.status,
+      response.status === 401
+        ? "Sesi berakhir."
+        : typeof body?.error === "string"
+          ? body.error
+          : "PDF belum bisa dikirim otomatis.",
+    );
+  }
+  return {
+    ok: Boolean(body?.ok),
+    messageId: typeof body?.messageId === "string" ? body.messageId : undefined,
+    to: typeof body?.to === "string" ? body.to : undefined,
+    error: typeof body?.error === "string" ? body.error : undefined,
+    windowOpen: body?.windowOpen === true,
+  };
+}
+
 export async function uploadPdf(file: File): Promise<StoredFile> {
   const form = new FormData();
   form.append("file", file, file.name);

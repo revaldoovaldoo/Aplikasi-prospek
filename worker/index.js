@@ -15,6 +15,11 @@ import {
   handleTelegramLeaderWebhook,
 } from "./leader.js";
 import {
+  getWhatsAppStatus,
+  handleWhatsAppWebhook,
+  sendQuoteWhatsApp,
+} from "./whatsapp.js";
+import {
   detectTelegramChat,
   ensureCronOwner,
   getCronHealth,
@@ -793,6 +798,58 @@ async function conflictResponse(db, userId) {
   );
 }
 
+async function handleWhatsAppStatus(request, env, auth) {
+  if (request.method !== "GET") {
+    return new Response(null, {
+      status: 405,
+      headers: { Allow: "GET", "Cache-Control": "private, no-store" },
+    });
+  }
+  const user = await auth.getUser(request);
+  if (!user) return json({ error: "Sign in required" }, 401);
+  const url = new URL(request.url);
+  try {
+    return json(await getWhatsAppStatus(env, env.DB, url.searchParams.get("phone") || ""));
+  } catch (error) {
+    console.error(
+      "whatsapp_status_error",
+      error instanceof Error ? error.message : "unknown error",
+    );
+    return json({ error: "Status WhatsApp belum bisa dimuat." }, 502);
+  }
+}
+
+async function handleWhatsAppSend(request, env, auth) {
+  if (request.method !== "POST") {
+    return new Response(null, {
+      status: 405,
+      headers: { Allow: "POST", "Cache-Control": "private, no-store" },
+    });
+  }
+  if (!isSameOriginRequest(request, env.APP_ORIGIN)) {
+    return json({ error: "Forbidden" }, 403);
+  }
+  const user = await auth.getUser(request);
+  if (!user) return json({ error: "Sign in required" }, 401);
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: "Body bukan JSON yang valid" }, 400);
+  }
+  try {
+    const result = await sendQuoteWhatsApp(env, env.DB, user.sub, body || {});
+    return json(result, result.status || 200);
+  } catch (error) {
+    console.error(
+      "whatsapp_send_error",
+      error instanceof Error ? error.message : "unknown error",
+    );
+    return json({ ok: false, error: "PDF belum bisa dikirim otomatis." }, 502);
+  }
+}
+
 async function handleState(request, env, auth) {
   const db = env.DB;
   if (!db) return json({ error: "Database belum tersedia" }, 500);
@@ -894,6 +951,12 @@ function setup(env) {
       if (url.pathname === "/api/data") {
         return handleState(request, environment, auth);
       }
+      if (url.pathname === "/api/whatsapp/status") {
+        return handleWhatsAppStatus(request, environment, auth);
+      }
+      if (url.pathname === "/api/whatsapp/send") {
+        return handleWhatsAppSend(request, environment, auth);
+      }
       if (url.pathname === "/api/files" || url.pathname.startsWith("/api/files/")) {
         return handleFiles(request, environment, auth);
       }
@@ -956,6 +1019,14 @@ export default {
   async fetch(request, env, ctx) {
     try {
       const url = new URL(request.url);
+      // WhatsApp memverifikasi webhook lewat GET dan mengirim update lewat POST.
+      // Keduanya memakai secret webhook, bukan sesi pengguna.
+      if (
+        (request.method === "GET" || request.method === "POST") &&
+        url.pathname === "/api/whatsapp/webhook"
+      ) {
+        return await handleWhatsAppWebhook(env.DB, env, request);
+      }
       // Telegram memanggil endpoint ini langsung setelah update masuk.
       // Jangan lewat auth aplikasi: autentikasi memakai secret webhook.
       if (

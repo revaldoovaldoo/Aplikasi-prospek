@@ -9,7 +9,14 @@ import {
   MailIcon,
   WhatsappIcon,
 } from "./icons";
-import { downloadUrl, pdfUrl } from "../lib/api";
+import {
+  ApiError,
+  downloadUrl,
+  fetchWhatsAppStatus,
+  pdfUrl,
+  sendQuoteWhatsApp,
+  type WhatsAppWindowStatus,
+} from "../lib/api";
 import { formatFileSize, formatShortDate } from "../lib/data";
 import {
   isValidEmail,
@@ -86,6 +93,9 @@ export default function QuoteSendDialog({
   const [notice, setNotice] = useState("");
   const [popupBlocked, setPopupBlocked] = useState(false);
   const [canShare, setCanShare] = useState(false);
+  const [waStatus, setWaStatus] = useState<WhatsAppWindowStatus | null>(null);
+  const [autoSending, setAutoSending] = useState(false);
+  const [autoSent, setAutoSent] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -95,10 +105,34 @@ export default function QuoteSendDialog({
     setEmailAddress(company?.email ?? "");
     setNotice("");
     setPopupBlocked(false);
+    setWaStatus(null);
+    setAutoSending(false);
+    setAutoSent(false);
     const nav = navigator as ShareNavigator;
     setCanShare(typeof nav.canShare === "function" && typeof nav.share === "function");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, company?.id, quote?.quoteFile.id]);
+
+  useEffect(() => {
+    if (!open || channel !== "whatsapp" || !isValidWhatsApp(waPhone)) {
+      setWaStatus(null);
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      fetchWhatsAppStatus(waPhone)
+        .then((status) => {
+          if (!cancelled) setWaStatus(status);
+        })
+        .catch(() => {
+          if (!cancelled) setWaStatus(null);
+        });
+    }, 300);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [open, channel, waPhone]);
 
   if (!quote || !company) return null;
 
@@ -114,6 +148,9 @@ export default function QuoteSendDialog({
   const waReady = isValidWhatsApp(waPhone);
   const emailReady = isValidEmail(emailAddress);
   const profileIncomplete = !profile.phone.trim() || !profile.email.trim();
+  const autoReady = Boolean(
+    waReady && waStatus?.configured && waStatus.open && !autoSent,
+  );
 
   const sendWhatsApp = () => {
     if (!waReady) {
@@ -132,6 +169,37 @@ export default function QuoteSendDialog({
         ? `WhatsApp dibuka ke nomor ${waNumber} dengan pesan terisi. PDF sudah diunduh; lampirkan PDF tersebut pada chat PIC.`
         : `Popup diblokir. PDF sudah diunduh; izinkan popup atau buka chat WhatsApp ke nomor ${waNumber} secara manual.`,
     );
+  };
+
+  const sendWhatsAppAutomatically = async () => {
+    if (!autoReady) return;
+    setAutoSending(true);
+    setPopupBlocked(false);
+    try {
+      const result = await sendQuoteWhatsApp({
+        fileId: quote.quoteFile.id,
+        phone: waNumber,
+        filename: quoteFilename(quote.number),
+        message,
+      });
+      if (result.ok) {
+        setAutoSent(true);
+        setNotice(`PDF terkirim otomatis ke +${waNumber} melalui WhatsApp.`);
+      } else {
+        setNotice(result.error || "PDF belum bisa dikirim otomatis.");
+      }
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 409) {
+        setWaStatus((current) => (current ? { ...current, open: false } : null));
+      }
+      setNotice(
+        error instanceof ApiError
+          ? error.message
+          : "PDF belum bisa dikirim otomatis. Gunakan tombol Buka WhatsApp.",
+      );
+    } finally {
+      setAutoSending(false);
+    }
   };
 
   const sendEmail = () => {
@@ -205,15 +273,29 @@ export default function QuoteSendDialog({
             <button
               type="button"
               className="btn btn-primary"
+              disabled={channel === "whatsapp" && (autoSending || autoSent)}
               onClick={() => {
-                if (channel === "whatsapp") sendWhatsApp();
-                else sendEmail();
+                if (channel === "whatsapp") {
+                  if (autoReady) void sendWhatsAppAutomatically();
+                  else sendWhatsApp();
+                } else sendEmail();
               }}
             >
               {channel === "whatsapp" ? (
-                <>
-                  <WhatsappIcon size={15} /> Buka WhatsApp
-                </>
+                autoSent ? (
+                  <>
+                    <CheckIcon size={15} /> PDF terkirim
+                  </>
+                ) : autoReady ? (
+                  <>
+                    <WhatsappIcon size={15} />{" "}
+                    {autoSending ? "Mengirim PDF..." : "Kirim PDF otomatis"}
+                  </>
+                ) : (
+                  <>
+                    <WhatsappIcon size={15} /> Buka WhatsApp
+                  </>
+                )
               ) : (
                 <>
                   <MailIcon size={15} /> Buka e-mail
@@ -311,12 +393,20 @@ export default function QuoteSendDialog({
                   setWaPhone(event.target.value);
                   setNotice("");
                   setPopupBlocked(false);
+                  setWaStatus(null);
+                  setAutoSent(false);
                 }}
               />
               <span className="field-hint">
-                {waReady
-                  ? `Chat akan dibuka ke +${waNumber}.`
-                  : "Isi nomor WhatsApp PIC perusahaan supaya chat langsung terbuka."}
+                {autoSent
+                  ? `PDF sudah dikirim ke +${waNumber}.`
+                  : autoReady
+                    ? `PIC sudah membalas. PDF akan dikirim otomatis ke +${waNumber}.`
+                    : waReady && waStatus?.configured
+                      ? `PIC belum membalas dalam 24 jam. Buka chat manual ke +${waNumber}.`
+                      : waReady
+                        ? `Chat akan dibuka ke +${waNumber}.`
+                        : "Isi nomor WhatsApp PIC perusahaan supaya chat langsung terbuka."}
               </span>
             </div>
           ) : (
@@ -349,12 +439,32 @@ export default function QuoteSendDialog({
           </div>
 
           <p className="send-note">
-            <strong>Buka WhatsApp</strong> membuka chat langsung ke nomor PIC dengan pesan
-            terisi, lalu PDF diunduh otomatis. WhatsApp tidak mengizinkan situs web
-            melampirkan file ke nomor tertentu, jadi lampirkan PDF dari unduhan. Untuk
-            mengirim PDF lewat lembar berbagi, gunakan tombol di bawah lalu pilih WhatsApp
-            dan kontak PIC.
+            {autoSent ? (
+              <>
+                <strong>PDF sudah terkirim otomatis.</strong> Pesan dan dokumen sudah
+                diterima WhatsApp; tidak perlu mengunduh atau melampirkan PDF lagi.
+              </>
+            ) : autoReady ? (
+              <>
+                <strong>Kirim PDF otomatis</strong> memakai jendela layanan WhatsApp yang
+                terbuka karena PIC sudah membalas. PDF dan pesan dikirim langsung dari
+                aplikasi, tanpa perlu melampirkan manual.
+              </>
+            ) : (
+              <>
+                <strong>Buka WhatsApp</strong> membuka chat langsung ke nomor PIC dengan
+                pesan terisi, lalu PDF diunduh otomatis. WhatsApp tidak mengizinkan situs
+                web melampirkan file ke nomor tertentu, jadi lampirkan PDF dari unduhan.
+                Pengiriman otomatis aktif setelah PIC membalas dalam 24 jam terakhir.
+              </>
+            )}
           </p>
+
+          {autoReady ? (
+            <button type="button" className="link-btn" onClick={sendWhatsApp}>
+              Buka WhatsApp manual
+            </button>
+          ) : null}
 
           {canShare ? (
             <button type="button" className="btn btn-secondary btn-sm" onClick={() => void sharePdf()}>
