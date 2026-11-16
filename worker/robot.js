@@ -98,8 +98,9 @@ const AGENT_BLUEPRINT = {
     {
       id: "publish-whatsapp",
       name: "Agen WhatsApp",
-      role: "Menghubungi PIC hasil Klarifikasi dengan template penawaran internet, upgrade perangkat, Data Center, dan server.",
-      provider: "WhatsApp Cloud API (template)",
+      role: "Draft: menggali kebutuhan PIC, menawarkan layanan tanpa harga, lalu membuat ringkasan handoff ke WhatsApp pribadi.",
+      provider: "Draft — WhatsApp Cloud API",
+      draft: true,
     },
     {
       id: "publish-prospect",
@@ -156,7 +157,7 @@ function agentStructure(env = {}, telegramConfigured = false) {
         agent.id === "publish-telegram" && !telegramConfigured
           ? "Telegram (belum aktif)"
           : agent.id === "publish-whatsapp" && !whatsapp
-            ? "WhatsApp Cloud API (belum aktif)"
+            ? "Draft — WhatsApp Cloud API (belum aktif)"
             : agent.provider,
     })),
   };
@@ -2402,7 +2403,10 @@ export async function getRobotStatus(db, env = {}, ownerId = "") {
     "Klarifikasi memakai Exa Answer dan OpenOSINT native untuk DNS/DNS-over-HTTPS dan RDAP domain; Finding memakai website publik gratis dan Exa Search. Tidak ada provider WormGPT/FraudGPT/GhostGPT/HackerGPT/Hexstrike.",
   );
   notes.push(
-    "Publish dipisah menjadi tiga pekerjaan: publish_telegram mengirim pesan, agen WhatsApp menghubungi PIC dengan template, dan publish_prospect menulis daftar Prospek. Telegram dan WhatsApp masing-masing dikirim satu kali setelah Klarifikasi menerima lead.",
+    "Publish dipisah menjadi tiga pekerjaan: publish_telegram mengirim pesan, agen WhatsApp masih berupa draft yang belum membalas otomatis, dan publish_prospect menulis daftar Prospek. Telegram dikirim satu kali setelah Klarifikasi menerima lead.",
+  );
+  notes.push(
+    "Draft agen WhatsApp hanya menyimpan balasan dengan status draft. Pengiriman template dan balasan otomatis belum diaktifkan sampai gateway, nomor, template, dan penyedia AI ditentukan.",
   );
   notes.push(
     "Telegram mewajibkan nama PIC yang lolos gate (bukan resepsionis/customer service, bukan placeholder, bukan beberapa nama), peran yang bukan resepsionis/customer service, dan minimal satu nomor PIC valid. Sampai dua nomor (kontak perusahaan dan nomor PIC) ditampilkan pada baris Nomor PIC. E-mail atau website yang kosong memakai placeholder; koordinat selalu diisi dari titik entitas atau pusat wilayah lead. Pesan tetap tujuh baris.",

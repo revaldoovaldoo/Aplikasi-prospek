@@ -154,6 +154,7 @@ export interface CorporateRobotAgent {
   role: string;
   provider: string;
   active: boolean;
+  draft?: boolean;
 }
 
 export interface CorporateRobotAgents {

@@ -290,7 +290,7 @@ function RobotPanel({
                     title={`${agent.role} · ${agent.provider}`}
                   >
                     <b>{agent.name}</b>
-                    <small>{agent.provider}</small>
+                    <small>{agent.draft ? "Draft · " : ""}{agent.provider}</small>
                   </span>
                 ))}
               </div>

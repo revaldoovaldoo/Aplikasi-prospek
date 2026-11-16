@@ -171,6 +171,22 @@ dalam file proyek:
   memasukkan lead baru yang sudah lolos Klarifikasi; antrean lama tidak dikirim
   massal saat kredensial pertama kali diaktifkan.
 
+**Draft Agen WhatsApp.** Logika percakapan ada di `worker/whatsapp-agent.js`
+dan sengaja belum dihubungkan ke webhook atau pengiriman. Draft ini:
+
+- menyimpan state percakapan per nomor PIC di D1;
+- menggali kebutuhan internet, upgrade, perangkat, Data Center, dan server;
+- tidak menyebut harga, diskon, SLA, atau kontrak;
+- membuat ringkasan handoff ketika client minta harga/manusia, komplain, atau
+  menyetujui ringkasan kebutuhan;
+- mengarahkan komunikasi lanjutan ke nomor WhatsApp pribadi pemilik;
+- menutup percakapan setelah permintaan berhenti;
+- menyimpan balasan sebagai `draft`, bukan mengirimkannya.
+
+Agen ini belum aktif dan tidak memakai Jenova berbayar. Pengaktifan menunggu
+nama gateway WhatsApp, nomor pengirim, template yang disetujui, serta keputusan
+penyedia AI. Satu pengingat setelah 24 jam direncanakan, tetapi belum dijalankan.
+
 **Pemicu 24/7.** Worker tidak hidup terus-menerus. Halaman Robot AI dan Corporate
 Engine menjalankan heartbeat saat dibuka, dan tombol **Jalankan sekarang**
 memproses batch manual. Untuk jadwal penuh, panggil endpoint berikut setiap 15 menit dari cron
