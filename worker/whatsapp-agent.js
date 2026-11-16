@@ -319,6 +319,10 @@ export async function recordDraftTurn(db, input = {}) {
   const now = nowIso();
   const lead = input.lead || {};
   const handoffAt = result.handoff ? now : previous?.handoff_at || "";
+  const followUpAt =
+    result.reply && !["handoff", "closed"].includes(result.state)
+      ? new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
+      : "";
   await db
     .prepare(
       `INSERT INTO whatsapp_agent_messages
@@ -341,9 +345,9 @@ export async function recordDraftTurn(db, input = {}) {
     .prepare(
       `INSERT INTO whatsapp_agent_conversations
         (wa_id, owner_id, lead_id, company_name, contact_name, state,
-         requirements, summary, last_inbound_at, last_outbound_at, handoff_at,
-         created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         requirements, summary, last_inbound_at, last_outbound_at, follow_up_at,
+         handoff_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(wa_id) DO UPDATE SET
          owner_id = excluded.owner_id,
          lead_id = excluded.lead_id,
@@ -354,6 +358,7 @@ export async function recordDraftTurn(db, input = {}) {
          summary = excluded.summary,
          last_inbound_at = excluded.last_inbound_at,
          last_outbound_at = excluded.last_outbound_at,
+         follow_up_at = excluded.follow_up_at,
          handoff_at = excluded.handoff_at,
          updated_at = excluded.updated_at`,
     )
@@ -368,12 +373,13 @@ export async function recordDraftTurn(db, input = {}) {
       result.handoff?.summary || previous?.summary || "",
       now,
       result.reply ? now : previous?.last_outbound_at || "",
+      followUpAt,
       handoffAt,
       previous?.created_at || now,
       now,
     )
     .run();
-  return { ok: true, ...result, handoff: result.handoff };
+  return { ok: true, ...result, followUpAt, handoff: result.handoff };
 }
 
 function safeJson(value) {
