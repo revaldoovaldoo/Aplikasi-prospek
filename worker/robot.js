@@ -26,6 +26,10 @@ import {
 import { researchCorporateLead } from "./research.js";
 import { openosintConfigured } from "./openosint.js";
 import { formatPicPhones, validPicPhone } from "./phone.js";
+import {
+  sendWhatsAppTemplate,
+  whatsappOutreachConfigured,
+} from "./whatsapp.js";
 
 const ROBOT_INTERVAL_MS = 15 * 60 * 1000;
 const ROBOT_LOCK_MS = 10 * 60 * 1000;
@@ -33,9 +37,9 @@ const DEFAULT_TELEGRAM_PHONE = "+6285156590261";
 const MAX_APP_STATE_CHARS = 1_500_000;
 
 /**
- * Struktur 9 agen: 3 Finding, 4 Klarifikasi (3 Exa + OpenOSINT native), dan
- * 2 Publish dengan pekerjaan terpisah (Telegram dan Prospek). OpenOSINT
- * berjalan langsung di Worker melalui DNS-over-HTTPS dan RDAP.
+ * Struktur 10 agen: 3 Finding, 4 Klarifikasi (3 Exa + OpenOSINT native), dan
+ * 3 Publish dengan pekerjaan terpisah (Telegram, WhatsApp, dan Prospek).
+ * OpenOSINT berjalan langsung di Worker melalui DNS-over-HTTPS dan RDAP.
  */
 const AGENT_BLUEPRINT = {
   finding: [
@@ -92,6 +96,12 @@ const AGENT_BLUEPRINT = {
       provider: "Telegram Bot API (gratis)",
     },
     {
+      id: "publish-whatsapp",
+      name: "Agen WhatsApp",
+      role: "Menghubungi PIC hasil Klarifikasi dengan template penawaran internet, upgrade perangkat, Data Center, dan server.",
+      provider: "WhatsApp Cloud API (template)",
+    },
+    {
       id: "publish-prospect",
       name: "Penulis Prospek",
       role: "Menulis informasi lead yang sudah diklarifikasi ke daftar Prospek.",
@@ -114,6 +124,7 @@ function findingStatusLabel(status) {
 
 function agentStructure(env = {}, telegramConfigured = false) {
   const exa = Boolean(clean(env.EXA_API_KEY));
+  const whatsapp = whatsappOutreachConfigured(env);
   return {
     finding: AGENT_BLUEPRINT.finding.map((agent) => ({
       ...agent,
@@ -138,11 +149,15 @@ function agentStructure(env = {}, telegramConfigured = false) {
       active:
         agent.id === "publish-telegram"
           ? Boolean(telegramConfigured)
-          : true,
+          : agent.id === "publish-whatsapp"
+            ? whatsapp
+            : true,
       provider:
         agent.id === "publish-telegram" && !telegramConfigured
           ? "Telegram (belum aktif)"
-          : agent.provider,
+          : agent.id === "publish-whatsapp" && !whatsapp
+            ? "WhatsApp Cloud API (belum aktif)"
+            : agent.provider,
     })),
   };
 }
@@ -185,6 +200,21 @@ const ROBOT_SCHEMA_SQL = [
   )`,
   `CREATE INDEX IF NOT EXISTS corporate_telegram_outbox_due
     ON corporate_telegram_outbox (status, created_at)`,
+  `CREATE TABLE IF NOT EXISTS corporate_whatsapp_outbox (
+    id TEXT PRIMARY KEY,
+    lead_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    claimed_at TEXT NOT NULL DEFAULT '',
+    sent_at TEXT NOT NULL DEFAULT '',
+    message_id TEXT NOT NULL DEFAULT '',
+    last_error TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (lead_id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS corporate_whatsapp_outbox_due
+    ON corporate_whatsapp_outbox (status, created_at)`,
   `CREATE TABLE IF NOT EXISTS corporate_robot_settings (
     owner_id TEXT PRIMARY KEY,
     enabled INTEGER NOT NULL DEFAULT 1,
@@ -926,6 +956,140 @@ async function seedTelegramOutbox(db) {
     .run();
 }
 
+async function enqueueWhatsAppOutreach(db, lead) {
+  const phone = validPicPhone(lead?.phone) ? clean(lead.phone) : "";
+  const contactName = sanitizePicName(lead?.contactName);
+  if (!phone || !contactName || !isPicRole(lead?.contactRole)) return null;
+  const now = nowIso();
+  const id = `${lead.id}:lead_outreach`;
+  await db
+    .prepare(
+      `INSERT INTO corporate_whatsapp_outbox
+        (id, lead_id, status, attempts, claimed_at, sent_at, message_id,
+         last_error, created_at, updated_at)
+       VALUES (?, ?, 'pending', 0, '', '', '', '', ?, ?)
+       ON CONFLICT(lead_id) DO NOTHING`,
+    )
+    .bind(id, lead.id, now, now)
+    .run();
+  return id;
+}
+
+export async function readWhatsAppOutboxHealth(db) {
+  const rows = await db
+    .prepare(
+      "SELECT status, COUNT(*) AS total FROM corporate_whatsapp_outbox GROUP BY status",
+    )
+    .all();
+  const health = {
+    pending: 0,
+    sending: 0,
+    sent: 0,
+    failed: 0,
+    uncertain: 0,
+    needsReview: 0,
+    total: 0,
+    attention: 0,
+  };
+  for (const row of rows.results ?? []) {
+    const total = Number(row.total || 0);
+    const status = String(row.status || "");
+    health.total += total;
+    if (status in health) health[status] += total;
+  }
+  health.attention =
+    health.failed + health.uncertain + health.needsReview + health.sending;
+  return health;
+}
+
+/**
+ * Agen Publish WhatsApp. Hanya mengirim template resmi sekali per lead setelah
+ * Klarifikasi menghasilkan PIC. Tidak memakai pesan bebas karena Meta
+ * mewajibkan template untuk percakapan pertama di luar jendela 24 jam.
+ */
+async function notifyPendingWhatsApp(db, env, settings, limit = 2) {
+  if (!whatsappOutreachConfigured(env)) {
+    return { checked: 0, sent: 0, items: [] };
+  }
+  const rows = await db
+    .prepare(
+      `SELECT o.id AS outbox_id, o.attempts AS outbox_attempts, l.*
+       FROM corporate_whatsapp_outbox o
+       JOIN corporate_leads l ON l.id = o.lead_id
+       WHERE o.status = 'pending'
+       ORDER BY o.created_at ASC
+       LIMIT ?`,
+    )
+    .bind(limit)
+    .all();
+  const items = [];
+  let sent = 0;
+  for (const row of rows.results ?? []) {
+    const claimedAt = nowIso();
+    const claim = await db
+      .prepare(
+        `UPDATE corporate_whatsapp_outbox
+         SET status = 'sending', attempts = attempts + 1,
+             claimed_at = ?, updated_at = ?
+         WHERE id = ? AND status = 'pending'`,
+      )
+      .bind(claimedAt, claimedAt, row.outbox_id)
+      .run();
+    if (!claim.meta?.changes) continue;
+
+    const lead = rowToLead(row);
+    if (!telegramLeadReady(lead)) {
+      const error = "Nama PIC atau nomor PIC belum lolos gate WhatsApp.";
+      await db
+        .prepare(
+          `UPDATE corporate_whatsapp_outbox
+           SET status = 'needs_review', claimed_at = '', last_error = ?,
+               updated_at = ?
+           WHERE id = ?`,
+        )
+        .bind(error, nowIso(), row.outbox_id)
+        .run();
+      items.push({ id: row.outbox_id, status: "needs_review", error });
+      continue;
+    }
+
+    const result = await sendWhatsAppTemplate(env, db, {
+      ownerId: settings?.owner_id || "",
+      phone: lead.phone,
+      parameters: [sanitizePicName(lead.contactName), clean(lead.name)],
+    });
+    const finishedAt = nowIso();
+    const status = result.ok
+      ? "sent"
+      : result.uncertain
+        ? "uncertain"
+        : "needs_review";
+    await db
+      .prepare(
+        `UPDATE corporate_whatsapp_outbox
+         SET status = ?, claimed_at = '', sent_at = ?, message_id = ?,
+             last_error = ?, updated_at = ?
+         WHERE id = ?`,
+      )
+      .bind(
+        status,
+        result.ok ? finishedAt : "",
+        result.messageId || "",
+        result.ok ? "" : result.error || "WhatsApp gagal.",
+        finishedAt,
+        row.outbox_id,
+      )
+      .run();
+    if (result.ok) sent += 1;
+    items.push({
+      id: row.outbox_id,
+      status,
+      error: result.ok ? "" : result.error || "WhatsApp gagal.",
+    });
+  }
+  return { checked: (rows.results ?? []).length, sent, items };
+}
+
 /**
  * Mengirim isi outbox secara idempoten. Klaim dilakukan dengan UPDATE atomik
  * sebelum send, sehingga dua proses tidak dapat mengirim baris yang sama.
@@ -1124,11 +1288,55 @@ export function buildTelegramMessage(lead) {
   ].join("\n");
 }
 
+/**
+ * Setelah kontak diperbaiki, pesan lama yang sebelumnya ditolak gate masih
+ * berstatus needs_review. Evaluasi ulang hanya baris yang sekarang punya nama
+ * PIC dan nomor valid; baris yang masih lemah dibiarkan agar tidak dikirim.
+ */
+async function requeueCorrectedTelegram(db, limit = TELEGRAM_REVIEW_BATCH_LIMIT) {
+  const rows = await db
+    .prepare(
+      `SELECT o.id AS outbox_id, l.*
+       FROM corporate_telegram_outbox o
+       JOIN corporate_leads l ON l.id = o.lead_id
+       WHERE o.status = 'needs_review'
+         AND o.review_reason IN ('invalid', 'failed')
+       ORDER BY l.updated_at DESC, o.updated_at DESC
+       LIMIT 100`,
+    )
+    .all();
+  let requeued = 0;
+  for (const row of rows.results ?? []) {
+    if (requeued >= limit) break;
+    if (!buildTelegramMessage(rowToLead(row))) continue;
+    const now = nowIso();
+    const reset = await db
+      .prepare(
+        `UPDATE corporate_telegram_outbox
+         SET status = 'pending', attempts = 0, claimed_at = '',
+             next_attempt_at = '', last_attempt_at = '', review_reason = '',
+             last_error = '', updated_at = ?
+         WHERE id = ? AND status = 'needs_review'
+           AND review_reason IN ('invalid', 'failed')`,
+      )
+      .bind(now, row.outbox_id)
+      .run();
+    if (reset.meta?.changes) requeued += 1;
+  }
+  return requeued;
+}
+
 async function notifyPending(db, env, settings, limit = 2) {
   await reconcileTelegramOutbox(db);
   const config = telegramConfig(env, settings);
   if (!config.configured) return { checked: 0, sent: 0 };
   await seedTelegramOutbox(db);
+  await requeueCorrectedTelegram(db).catch((error) => {
+    console.error(
+      "corporate_robot_telegram_requeue_error",
+      error instanceof Error ? error.message : "unknown error",
+    );
+  });
   const result = await flushTelegramOutbox(db, env, settings, limit);
   return { checked: result.checked, sent: result.sent };
 }
@@ -1139,7 +1347,13 @@ async function notifyPending(db, env, settings, limit = 2) {
  * yang mungkin sudah diterima Telegram. Setelah dikarantina sebagai
  * `needs_review`, pengguna dapat memilih untuk mencoba lagi lewat aksi ini.
  */
-export async function retryStuckTelegram(db, env, ownerId = "") {
+export async function retryStuckTelegram(db, env, ownerId = "", options = {}) {
+  const includeUncertain = Boolean(options?.includeUncertain);
+  const leadIds = new Set(
+    (Array.isArray(options?.leadIds) ? options.leadIds : [])
+      .map((id) => clean(String(id || "")))
+      .filter(Boolean),
+  );
   await ensureCorporateSchema(db);
   await ensureRobotSchema(db);
   let settings = await getSettings(db, ownerId);
@@ -1156,17 +1370,27 @@ export async function retryStuckTelegram(db, env, ownerId = "") {
 
   const rows = await db
     .prepare(
-      `SELECT id FROM corporate_telegram_outbox
-       WHERE status = 'failed'
-          OR (status = 'needs_review' AND review_reason IN ('failed', 'invalid', ''))
-       ORDER BY created_at ASC
+      `SELECT o.id AS outbox_id, l.*
+       FROM corporate_telegram_outbox o
+       JOIN corporate_leads l ON l.id = o.lead_id
+       WHERE o.status = 'failed'
+          OR (o.status = 'needs_review' AND (
+            o.review_reason IN ('failed', 'invalid', '')
+            OR (? = 1 AND o.review_reason = 'uncertain')
+          ))
+       ORDER BY l.updated_at DESC, o.created_at ASC
        LIMIT ?`,
     )
-    .bind(TELEGRAM_REVIEW_BATCH_LIMIT)
+    .bind(includeUncertain ? 1 : 0, TELEGRAM_REVIEW_BATCH_LIMIT * 10)
     .all();
   let requeued = 0;
   let sent = 0;
   for (const row of rows.results ?? []) {
+    if (requeued >= TELEGRAM_REVIEW_BATCH_LIMIT) break;
+    if (leadIds.size > 0 && !leadIds.has(clean(row.id))) continue;
+    // Jangan reset baris yang masih tidak lolos gate; biarkan needs_review
+    // sampai kontaknya diperbaiki.
+    if (!buildTelegramMessage(rowToLead(row))) continue;
     const now = nowIso();
     const reset = await db
       .prepare(
@@ -1175,13 +1399,16 @@ export async function retryStuckTelegram(db, env, ownerId = "") {
              next_attempt_at = '', last_attempt_at = '', review_reason = '',
              last_error = '', updated_at = ?
          WHERE id = ? AND (status = 'failed'
-           OR (status = 'needs_review' AND review_reason IN ('failed', 'invalid', '')))`,
+           OR (status = 'needs_review' AND (
+             review_reason IN ('failed', 'invalid', '')
+             OR (? = 1 AND review_reason = 'uncertain')
+           )))`,
       )
-      .bind(now, row.id)
+      .bind(now, row.outbox_id, includeUncertain ? 1 : 0)
       .run();
     if (!reset.meta?.changes) continue;
     requeued += 1;
-    const flushed = await flushTelegramOutbox(db, env, settings, 1, row.id);
+    const flushed = await flushTelegramOutbox(db, env, settings, 1, row.outbox_id);
     if (flushed.items[0]?.status === "sent") sent += 1;
   }
 
@@ -1364,7 +1591,9 @@ export async function auditProspectTelegramHistory(db, ownerId) {
       db
         .prepare(
           `SELECT j.lead_id, j.stage, j.status, j.telegram_sent_at, j.published_at,
-                  o.status AS outbox_status, o.sent_at AS outbox_sent_at
+                  o.status AS outbox_status, o.sent_at AS outbox_sent_at,
+                  o.review_reason AS outbox_review_reason,
+                  o.last_error AS outbox_last_error
            FROM corporate_robot_jobs j
            LEFT JOIN corporate_telegram_outbox o
              ON o.lead_id = j.lead_id AND o.message_type = ?
@@ -1393,6 +1622,7 @@ export async function auditProspectTelegramHistory(db, ownerId) {
     const lead = sourceLeadId ? leadMap.get(sourceLeadId) : null;
     const job = sourceLeadId ? jobMap.get(sourceLeadId) : null;
     const outboxStatus = clean(job?.outbox_status);
+    const outboxReviewReason = clean(job?.outbox_review_reason);
     const hasTelegram = Boolean(clean(job?.telegram_sent_at) || outboxStatus === "sent");
     if (hasTelegram) {
       withTelegram += 1;
@@ -1431,6 +1661,8 @@ export async function auditProspectTelegramHistory(db, ownerId) {
       leadName: clean(lead?.name),
       stage: clean(job?.stage),
       outboxStatus,
+      outboxReviewReason,
+      outboxError: clean(job?.outbox_last_error),
       category,
       reason,
     });
@@ -1784,6 +2016,12 @@ async function advanceJob(db, row, env, settings, ownerId) {
           last_error: "",
           next_run_at: nowIso(),
         });
+        await enqueueWhatsAppOutreach(db, lead).catch((error) => {
+          console.error(
+            "corporate_robot_whatsapp_enqueue_error",
+            error instanceof Error ? error.message : "unknown error",
+          );
+        });
         continue;
       }
 
@@ -1968,6 +2206,7 @@ export async function readStats(db) {
     active: 0,
     published: 0,
     notified: 0,
+    whatsappSent: 0,
   };
   for (const row of stageRows.results ?? []) {
     const count = Number(row.total || 0);
@@ -1994,6 +2233,11 @@ export async function readStats(db) {
     .first();
   stats.published = Number(extras?.published || 0);
   stats.notified = Number(extras?.notified || 0);
+  const whatsapp = await db
+    .prepare("SELECT COUNT(*) AS total FROM corporate_whatsapp_outbox WHERE status = 'sent'")
+    .first()
+    .catch(() => null);
+  stats.whatsappSent = Number(whatsapp?.total || 0);
   const searches = await db
     .prepare("SELECT COUNT(*) AS total FROM corporate_leads")
     .first();
@@ -2068,6 +2312,7 @@ export async function getRobotStatus(db, env = {}, ownerId = "") {
   }
   await reconcileTelegramOutbox(db);
   const outbox = await readTelegramOutboxHealth(db);
+  const whatsappOutbox = await readWhatsAppOutboxHealth(db).catch(() => null);
   const stats = await readStats(db);
   let prospectSync = null;
   try {
@@ -2151,13 +2396,13 @@ export async function getRobotStatus(db, env = {}, ownerId = "") {
     "Scheduler 24/7 memakai GitHub Actions OIDC; tidak perlu repository secret tambahan.",
   );
   notes.push(
-    "Struktur 9 agen: 3 Finding (Profil Entitas, Sinyal Publik, Penilai Kebutuhan), 4 Klarifikasi (Scout, Contact Finder, Verifier, OpenOSINT), 2 Publish (Kurir Telegram, Penulis Prospek).",
+    "Struktur 10 agen: 3 Finding (Profil Entitas, Sinyal Publik, Penilai Kebutuhan), 4 Klarifikasi (Scout, Contact Finder, Verifier, OpenOSINT), 3 Publish (Kurir Telegram, Agen WhatsApp, Penulis Prospek).",
   );
   notes.push(
     "Klarifikasi memakai Exa Answer dan OpenOSINT native untuk DNS/DNS-over-HTTPS dan RDAP domain; Finding memakai website publik gratis dan Exa Search. Tidak ada provider WormGPT/FraudGPT/GhostGPT/HackerGPT/Hexstrike.",
   );
   notes.push(
-    "Publish dipisah menjadi dua stage: publish_telegram hanya mengirim pesan, publish_prospect hanya menulis daftar Prospek. Telegram dikirim satu kali setelah Klarifikasi menerima lead, tanpa perlu membuka aplikasi.",
+    "Publish dipisah menjadi tiga pekerjaan: publish_telegram mengirim pesan, agen WhatsApp menghubungi PIC dengan template, dan publish_prospect menulis daftar Prospek. Telegram dan WhatsApp masing-masing dikirim satu kali setelah Klarifikasi menerima lead.",
   );
   notes.push(
     "Telegram mewajibkan nama PIC yang lolos gate (bukan resepsionis/customer service, bukan placeholder, bukan beberapa nama), peran yang bukan resepsionis/customer service, dan minimal satu nomor PIC valid. Sampai dua nomor (kontak perusahaan dan nomor PIC) ditampilkan pada baris Nomor PIC. E-mail atau website yang kosong memakai placeholder; koordinat selalu diisi dari titik entitas atau pusat wilayah lead. Pesan tetap tujuh baris.",
@@ -2171,6 +2416,8 @@ export async function getRobotStatus(db, env = {}, ownerId = "") {
     telegramTokenSet: Boolean(config.token),
     telegramChatIdSet: Boolean(config.chatId),
     telegramTarget: config.target,
+    whatsappConfigured: whatsappOutreachConfigured(env),
+    whatsappOutbox,
     exaConfigured: Boolean(env.EXA_API_KEY),
     openosintConfigured: openosintConfigured(env),
     agents: agentStructure(env, config.configured),
@@ -2350,6 +2597,7 @@ export async function runCorporateRobot(db, env = {}, options = {}) {
   let published = 0;
   let prospectAdded = 0;
   let notified = 0;
+  let whatsappSent = 0;
   let lastError = "";
   let prospectSync = null;
   const updated = [];
@@ -2372,6 +2620,19 @@ export async function runCorporateRobot(db, env = {}, options = {}) {
       return { checked: 0, sent: 0 };
     });
     notified += preflight.sent;
+    const whatsappPreflight = await notifyPendingWhatsApp(
+      db,
+      env,
+      settings,
+      TELEGRAM_BATCH_LIMIT,
+    ).catch((error) => {
+      console.error(
+        "corporate_robot_whatsapp_preflight_error",
+        error instanceof Error ? error.message : "unknown error",
+      );
+      return { checked: 0, sent: 0 };
+    });
+    whatsappSent += whatsappPreflight.sent;
 
     await ensureJobs(db);
     prospectSync = await reconcileTelegramProspects(db, ownerId).catch((error) => {
@@ -2445,6 +2706,19 @@ export async function runCorporateRobot(db, env = {}, options = {}) {
       TELEGRAM_BATCH_LIMIT,
     );
     notified += pending.sent;
+    const whatsappPending = await notifyPendingWhatsApp(
+      db,
+      env,
+      settings,
+      TELEGRAM_BATCH_LIMIT,
+    ).catch((error) => {
+      console.error(
+        "corporate_robot_whatsapp_pending_error",
+        error instanceof Error ? error.message : "unknown error",
+      );
+      return { checked: 0, sent: 0 };
+    });
+    whatsappSent += whatsappPending.sent;
 
     const finishedAt = nowIso();
     await db
@@ -2474,6 +2748,7 @@ export async function runCorporateRobot(db, env = {}, options = {}) {
       published,
       prospectAdded,
       notified,
+      whatsappSent,
       remaining: Number(remainingRow?.total || 0),
       error: lastError,
       prospectSync,

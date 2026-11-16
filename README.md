@@ -120,7 +120,9 @@ bukan dari Corporate Engine. Panel ini menjalankan tiga tahap:
    MX. Status **Terverifikasi publik** berarti bukti publik saling mendukung;
    tetap konfirmasi saat menghubungi PIC.
 3. **Publish** — menyimpan hasil ke D1, menambahkannya ke Prospek bila
-   **Auto ke Prospek** aktif, dan mengirim ringkasan ke Telegram.
+   **Auto ke Prospek** aktif, mengirim ringkasan ke Telegram, dan menjalankan
+   **Agen WhatsApp** untuk menghubungi PIC hasil Klarifikasi dengan template
+   penawaran internet, upgrade perangkat, Data Center, dan server.
 
 Robot tidak mengakses CCTV, kamera, akun sosial media pribadi, atau area yang
 membutuhkan login. Verifikasi hanya memakai sumber publik dan data bisnis yang
@@ -138,18 +140,36 @@ dalam file proyek:
   akan disimpan ke pengaturan robot.
 - `TELEGRAM_TARGET_PHONE` — opsional, default `+6285156590261` untuk label target.
 - `ROBOT_CRON_SECRET` — mengaktifkan endpoint cron. Buat nilai acak yang panjang.
-- `WHATSAPP_ACCESS_TOKEN` — token akses WhatsApp Cloud API untuk mengirim PDF.
+- `WHATSAPP_ACCESS_TOKEN` — token akses WhatsApp Cloud API untuk mengirim PDF
+  dan template outreach.
 - `WHATSAPP_PHONE_NUMBER_ID` — ID nomor bisnis dari dashboard Meta.
 - `WHATSAPP_APP_SECRET` — App Secret Meta untuk memverifikasi tanda tangan webhook.
 - `WHATSAPP_VERIFY_TOKEN` — nilai acak yang Anda isi juga saat mengatur webhook.
 - `WHATSAPP_API_VERSION` — opsional, default `v23.0`.
+- `WHATSAPP_OUTREACH_TEMPLATE` — nama template yang sudah disetujui Meta untuk
+  kontak pertama. Wajib diisi agar Agen WhatsApp aktif.
+- `WHATSAPP_OUTREACH_LANGUAGE` — opsional, default `id`.
+- `WHATSAPP_OUTREACH_ENABLED` — isi `true` untuk mengaktifkan pengiriman template
+  otomatis. Tanpa nilai ini agen tetap nonaktif meskipun kredensial lain ada.
 
   Atur webhook Meta ke `https://<domain-site>/api/whatsapp/webhook`, berlangganan
-  event `messages`, lalu masukkan verify token yang sama. Kirim otomatis hanya
-  berjalan setelah PIC mengirim pesan ke nomor bisnis dalam 24 jam terakhir;
-  kontak pertama tetap manual. Service message pertama 1.000 per nomor per bulan
-  gratis menurut ketentuan Meta, sedangkan template marketing berbayar tidak
-  dipakai oleh alur ini.
+  event `messages`, lalu masukkan verify token yang sama. Pengiriman PDF dari
+  penawaran tetap hanya berjalan setelah PIC mengirim pesan ke nomor bisnis
+  dalam 24 jam terakhir. Agen WhatsApp memakai **template resmi** untuk kontak
+  pertama; pesan bebas tidak dipakai karena Meta membatasi percakapan di luar
+  jendela 24 jam. Template harus punya dua variabel body: `{{1}}` nama PIC dan
+  `{{2}}` nama perusahaan/sekolah/hotel. Contoh body yang bisa diajukan:
+
+  ```text
+  Halo Bapak/Ibu {{1}}, saya dari tim ASNET. Kami menawarkan kerja sama internet,
+  upgrade bandwidth, dan penguatan perangkat untuk {{2}}. Kami juga melayani
+  pembuatan/maintenance Data Center dan server. Apakah Bapak/Ibu berkenan
+  berdiskusi singkat?
+  ```
+
+  Template marketing adalah pesan berbayar sesuai ketentuan Meta. Agen hanya
+  memasukkan lead baru yang sudah lolos Klarifikasi; antrean lama tidak dikirim
+  massal saat kredensial pertama kali diaktifkan.
 
 **Pemicu 24/7.** Worker tidak hidup terus-menerus. Halaman Robot AI dan Corporate
 Engine menjalankan heartbeat saat dibuka, dan tombol **Jalankan sekarang**

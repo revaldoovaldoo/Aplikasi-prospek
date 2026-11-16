@@ -7,7 +7,9 @@ import {
   normalizeWaId,
   readWhatsAppWindow,
   sendQuoteWhatsApp,
+  sendWhatsAppTemplate,
   verifyWebhookSignature,
+  whatsappOutreachConfigured,
 } from "../worker/whatsapp.js";
 
 function fakeDb(lastInboundAt = "") {
@@ -115,6 +117,67 @@ test("webhook GET mengembalikan challenge saat verify token cocok", async () => 
   const response = await handleWhatsAppWebhook(fakeDb(), env, request);
   assert.equal(response.status, 200);
   assert.equal(await response.text(), "abc123");
+});
+
+test("WhatsApp outreach hanya aktif dengan token, phone ID, template, dan flag", () => {
+  const base = {
+    WHATSAPP_ACCESS_TOKEN: "token",
+    WHATSAPP_PHONE_NUMBER_ID: "123",
+    WHATSAPP_OUTREACH_TEMPLATE: "outreach_internet",
+  };
+  assert.equal(whatsappOutreachConfigured(base), false);
+  assert.equal(
+    whatsappOutreachConfigured({ ...base, WHATSAPP_OUTREACH_ENABLED: "true" }),
+    true,
+  );
+  assert.equal(
+    whatsappOutreachConfigured({
+      ...base,
+      WHATSAPP_OUTREACH_ENABLED: "true",
+      WHATSAPP_OUTREACH_TEMPLATE: "template tidak valid",
+    }),
+    false,
+  );
+});
+
+test("sendWhatsAppTemplate mengirim template outreach dengan dua parameter", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url: String(url), init });
+    return new Response(JSON.stringify({ messages: [{ id: "wamid.template" }] }), {
+      status: 200,
+    });
+  };
+  try {
+    const result = await sendWhatsAppTemplate(
+      {
+        ...env,
+        WHATSAPP_OUTREACH_ENABLED: "true",
+        WHATSAPP_OUTREACH_TEMPLATE: "outreach_internet",
+        WHATSAPP_OUTREACH_LANGUAGE: "id",
+      },
+      fakeDb(),
+      {
+        ownerId: "user-1",
+        phone: "0812 3456 7890",
+        parameters: ["Budi Santoso", "Hotel Contoh"],
+      },
+    );
+    assert.equal(result.ok, true);
+    assert.equal(result.messageId, "wamid.template");
+    const payload = JSON.parse(calls[0].init.body);
+    assert.equal(payload.to, "6281234567890");
+    assert.equal(payload.type, "template");
+    assert.equal(payload.template.name, "outreach_internet");
+    assert.equal(payload.template.language.code, "id");
+    assert.deepEqual(
+      payload.template.components[0].parameters.map((item) => item.text),
+      ["Budi Santoso", "Hotel Contoh"],
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("sendQuoteWhatsApp mengunggah PDF lalu mengirim dokumen", async () => {

@@ -122,6 +122,7 @@ export interface CorporateRobotStats {
   active: number;
   published: number;
   notified: number;
+  whatsappSent: number;
 }
 
 export interface CorporateRobotOutbox {
@@ -132,6 +133,17 @@ export interface CorporateRobotOutbox {
   uncertain: number;
   needsReview: number;
   retryable: number;
+  total: number;
+  attention: number;
+}
+
+export interface CorporateWhatsAppOutbox {
+  pending: number;
+  sending: number;
+  sent: number;
+  failed: number;
+  uncertain: number;
+  needsReview: number;
   total: number;
   attention: number;
 }
@@ -157,6 +169,8 @@ export interface CorporateRobotStatus {
   telegramTokenSet: boolean;
   telegramChatIdSet: boolean;
   telegramTarget: string;
+  whatsappConfigured: boolean;
+  whatsappOutbox?: CorporateWhatsAppOutbox | null;
   exaConfigured: boolean;
   openosintConfigured: boolean;
   agents: CorporateRobotAgents;
@@ -185,6 +199,7 @@ export interface CorporateRobotRunResult {
   published: number;
   prospectAdded: number;
   notified: number;
+  whatsappSent: number;
   remaining: number;
   error?: string;
   updated: CorporateRobotJob[];

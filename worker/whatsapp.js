@@ -323,6 +323,116 @@ export async function handleWhatsAppWebhook(db, env, request) {
   });
 }
 
+/** Template resmi untuk pesan pertama ke PIC di luar jendela 24 jam. */
+export function whatsappOutreachTemplate(env) {
+  const name = clean(env?.WHATSAPP_OUTREACH_TEMPLATE);
+  const language = clean(env?.WHATSAPP_OUTREACH_LANGUAGE) || "id";
+  return {
+    name: /^[a-z0-9_]{1,80}$/i.test(name) ? name : "",
+    language: /^[a-z]{2,3}(?:_[A-Z]{2})?$/.test(language) ? language : "id",
+  };
+}
+
+export function whatsappOutreachConfigured(env) {
+  const template = whatsappOutreachTemplate(env);
+  return Boolean(
+    clean(env?.WHATSAPP_ACCESS_TOKEN) &&
+      clean(env?.WHATSAPP_PHONE_NUMBER_ID) &&
+      clean(env?.WHATSAPP_OUTREACH_ENABLED).toLowerCase() === "true" &&
+      template.name,
+  );
+}
+
+/**
+ * Kirim template WhatsApp (bukan pesan bebas) untuk kontak pertama. Meta
+ * mewajibkan template yang sudah disetujui untuk percakapan di luar 24 jam.
+ * Parameter body yang dipakai agen: {{1}} nama PIC, {{2}} nama entitas.
+ */
+export async function sendWhatsAppTemplate(env, db, input = {}) {
+  if (!whatsappOutreachConfigured(env)) {
+    return {
+      ok: false,
+      status: 503,
+      error:
+        "WhatsApp outreach belum aktif. Isi WHATSAPP_ACCESS_TOKEN, WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_OUTREACH_ENABLED=true, dan WHATSAPP_OUTREACH_TEMPLATE.",
+    };
+  }
+  const waId = normalizeWaId(input.phone);
+  if (!isValidWaId(waId)) {
+    return { ok: false, status: 400, error: "Nomor WhatsApp PIC tidak valid." };
+  }
+  const template = whatsappOutreachTemplate(env);
+  const parameters = (Array.isArray(input.parameters) ? input.parameters : [])
+    .map((value) => clean(String(value || "")).slice(0, 300))
+    .filter(Boolean);
+  if (parameters.length < 2) {
+    return { ok: false, status: 400, error: "Parameter template WhatsApp belum lengkap." };
+  }
+
+  let response;
+  try {
+    response = await fetch(apiUrl(env, "/messages"), {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.WHATSAPP_ACCESS_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        recipient_type: "individual",
+        to: waId,
+        type: "template",
+        template: {
+          name: template.name,
+          language: { code: template.language },
+          components: [
+            {
+              type: "body",
+              parameters: parameters.slice(0, 2).map((text) => ({
+                type: "text",
+                text,
+              })),
+            },
+          ],
+        },
+      }),
+    });
+  } catch {
+    return {
+      ok: false,
+      status: 502,
+      uncertain: true,
+      error: "WhatsApp tidak dapat dihubungi; status pengiriman belum pasti.",
+    };
+  }
+  const text = await response.text();
+  if (!response.ok) {
+    const error = parseGraphError(text) || "WhatsApp menolak template outreach.";
+    await recordMessage(db, {
+      ownerId: input.ownerId,
+      waId,
+      direction: "outbound",
+      status: "failed",
+      error,
+    }).catch(() => undefined);
+    return { ok: false, status: 502, error };
+  }
+  let messageId = "";
+  try {
+    messageId = clean(JSON.parse(text)?.messages?.[0]?.id);
+  } catch {
+    /* ID opsional; pesan tetap dianggap terkirim bila respons sukses. */
+  }
+  await recordMessage(db, {
+    ownerId: input.ownerId,
+    waId,
+    direction: "outbound",
+    messageId,
+    status: "sent",
+  }).catch(() => undefined);
+  return { ok: true, status: 200, messageId, to: waId };
+}
+
 export async function sendQuoteWhatsApp(env, db, ownerId, input = {}) {
   if (!whatsappConfigured(env)) {
     return {

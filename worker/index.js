@@ -639,7 +639,13 @@ async function handleCorporateRobotTelegramRetry(request, env, auth) {
   const user = await auth.getUser(request);
   if (!user) return json({ error: "Sign in required" }, 401);
   try {
-    return json(await retryStuckTelegram(env.DB, env, user.sub));
+    const body = await request.json().catch(() => ({}));
+    return json(
+      await retryStuckTelegram(env.DB, env, user.sub, {
+        includeUncertain: body?.includeUncertain === true,
+        leadIds: Array.isArray(body?.leadIds) ? body.leadIds : [],
+      }),
+    );
   } catch (error) {
     console.error(
       "corporate_robot_telegram_retry_error",

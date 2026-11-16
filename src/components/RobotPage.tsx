@@ -242,6 +242,17 @@ function RobotPanel({
         <div className="robot-stage">
           <span className="robot-stage-index">4</span>
           <div>
+            <strong>Publish · WhatsApp</strong>
+            <span>
+              Agen WhatsApp · {stats?.whatsappSent ?? 0} terkirim ·{" "}
+              {status?.whatsappOutbox?.pending ?? 0} antre.
+            </span>
+          </div>
+          <b>{stats?.whatsappSent ?? 0}</b>
+        </div>
+        <div className="robot-stage">
+          <span className="robot-stage-index">5</span>
+          <div>
             <strong>Publish · Prospek</strong>
             <span>
               Penulis Prospek · {stats?.published ?? 0} masuk ·{" "}
@@ -313,6 +324,10 @@ function RobotPanel({
         <span className={`robot-chip ${status?.telegramConfigured ? "ok" : "warn"}`}>
           <SparkIcon size={13} /> Telegram{" "}
           {status?.telegramConfigured ? "aktif" : "belum aktif"}
+        </span>
+        <span className={`robot-chip ${status?.whatsappConfigured ? "ok" : "warn"}`}>
+          <SparkIcon size={13} /> WhatsApp{" "}
+          {status?.whatsappConfigured ? "aktif" : "belum aktif"}
         </span>
         <span className="robot-chip">
           Auto Prospek {status?.autoPublish ? "aktif" : "nonaktif"}
@@ -437,6 +452,17 @@ function RobotPanel({
         </div>
       )}
 
+      {!status?.whatsappConfigured ? (
+        <div className="robot-note">
+          Agen WhatsApp belum aktif. Isi <code>WHATSAPP_ACCESS_TOKEN</code>,{" "}
+          <code>WHATSAPP_PHONE_NUMBER_ID</code>, <code>WHATSAPP_OUTREACH_TEMPLATE</code>,{" "}
+          <code>WHATSAPP_OUTREACH_LANGUAGE=id</code>, dan{" "}
+          <code>WHATSAPP_OUTREACH_ENABLED=true</code> di Sites → Secrets. Template
+          harus disetujui Meta dengan body <code>{"{{1}}"}</code> nama PIC dan{" "}
+          <code>{"{{2}}"}</code> nama perusahaan/sekolah/hotel.
+        </div>
+      ) : null}
+
       <div className="robot-setup robot-setup-ok">
         <CheckIcon size={15} />
         <span>
@@ -488,10 +514,10 @@ function RobotPanel({
       )}
 
       <p className="robot-note">
-        Struktur 9 agen: 3 Finding memakai website publik gratis dan Exa Search;
+        Struktur 10 agen: 3 Finding memakai website publik gratis dan Exa Search;
         4 Klarifikasi memakai Exa Scout, Contact Finder, Verifier, serta OpenOSINT pasif
-        untuk DNS/RDAP domain; 2 Publish bekerja terpisah — Kurir Telegram mengirim pesan,
-        Penulis Prospek menulis daftar Prospek. Telegram hanya mewajibkan nama PIC dan
+        untuk DNS/RDAP domain; 3 Publish bekerja terpisah — Kurir Telegram mengirim pesan,
+        Agen WhatsApp menghubungi PIC, Penulis Prospek menulis daftar Prospek. Telegram hanya mewajibkan nama PIC dan
         minimal satu nomor PIC valid; hingga dua nomor (kontak perusahaan dan nomor PIC)
         ditampilkan pada baris Nomor PIC. E-mail atau website yang kosong memakai
         placeholder. Koordinat selalu diisi dari titik entitas; bila belum ditemukan,
