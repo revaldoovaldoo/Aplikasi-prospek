@@ -20,7 +20,7 @@ Variabel body:
 Body:
 
 ```text
-Halo Bapak/Ibu {{1}}, saya asisten digital ASNET. Kami membantu kebutuhan internet, upgrade jaringan dan perangkat, serta pembangunan atau perawatan Data Center dan server untuk {{2}}. Apakah Bapak/Ibu berkenan berdiskusi singkat mengenai kebutuhan saat ini?
+Halo Bapak/Ibu {{1}}, saya asisten digital ASNET yang nantinya akan dihubungkan dengan rekanan kami Bp. Pane. Kami membantu kebutuhan internet, upgrade jaringan dan perangkat, serta pembangunan atau perawatan Data Center dan server untuk {{2}}. Apakah Bapak/Ibu berkenan berdiskusi singkat mengenai kebutuhan saat ini?
 ```
 
 Catatan:

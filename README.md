@@ -196,17 +196,23 @@ belum dihubungkan ke agen. Isi lewat Sites → Secrets bila endpoint sudah dipil
 - `WHATSAPP_AI_API_KEY` — API key endpoint tersebut. Ollama lokal dapat memakai
   nilai placeholder, tetapi endpoint yang menghadap internet sebaiknya diberi
   autentikasi sendiri.
-- `WHATSAPP_AI_MODEL` — contoh `qwen/qwen3.8-27b` di Groq atau `qwen3:8b` di
+- `WHATSAPP_AI_MODEL` — contoh `qwen/qwen3.8-27b` di Groq atau model Hermes di
   Ollama.
 - `WHATSAPP_AI_ENABLED` — isi `true` setelah endpoint dan model diuji.
+- `WHATSAPP_AI_FALLBACK_BASE_URL`, `WHATSAPP_AI_FALLBACK_API_KEY`, dan
+  `WHATSAPP_AI_FALLBACK_MODEL` — opsional, untuk Ollama + Hermes 4 sebagai
+  cadangan bila Groq gagal atau kena batas.
 
-Opsi gratis yang paling praktis: **Groq free tier** untuk endpoint hosted, atau
-**Ollama + Qwen3-8B** (Apache 2.0) di VPS/PC terpisah. Ollama tidak dapat berjalan
-di dalam Worker Cloudflare; Worker hanya memanggil endpoint HTTPS-nya. Model 7B–8B
-kuantisasi membutuhkan sekitar 8–16 GB RAM untuk CPU yang lambat; untuk percakapan
-langsung, GPU atau endpoint Groq lebih realistis. Endpoint gratis dapat memiliki
-batas harian dan kebijakan retensi; jangan kirim data client sebelum kebijakan
-privasi endpoint ditinjau.
+Susunan yang disarankan: **Groq free tier** sebagai provider utama, lalu
+**Ollama + Hermes 4 14B** (Apache 2.0) sebagai fallback di VPS/PC terpisah.
+Groq saat audit tidak menyediakan model Hermes; yang dipadukan adalah endpoint
+Groq dengan model Hermes yang berjalan di Ollama. Ollama tidak dapat berjalan di
+dalam Worker Cloudflare; Worker hanya memanggil endpoint HTTPS-nya. Model 14B
+kuantisasi membutuhkan sekitar 16 GB RAM/VRAM; untuk percakapan langsung, GPU
+lebih realistis. Endpoint gratis dapat memiliki batas harian dan kebijakan
+retensi; jangan kirim data client sebelum kebijakan privasi endpoint ditinjau.
+Detail arsitektur dan audit gateway ada di
+[`docs/whatsapp-ai-and-gateway.md`](docs/whatsapp-ai-and-gateway.md).
 
 **Pemicu 24/7.** Worker tidak hidup terus-menerus. Halaman Robot AI dan Corporate
 Engine menjalankan heartbeat saat dibuka, dan tombol **Jalankan sekarang**

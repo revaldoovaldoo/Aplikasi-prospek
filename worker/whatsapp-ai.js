@@ -3,55 +3,128 @@
  *
  * No provider is hard-coded and this module is not connected to the WhatsApp
  * webhook. It works with any endpoint that implements
- * `POST {baseUrl}/chat/completions`, for example:
- * - Groq: https://api.groq.com/openai/v1
- * - Ollama self-host: https://llm.example.com/v1
+ * `POST {baseUrl}/chat/completions`.
  *
- * The adapter is disabled until all four variables are set:
+ * Recommended setup:
+ * - Primary: Groq free tier, OpenAI-compatible.
+ * - Fallback: self-hosted Ollama running Hermes 4 14B or Qwen3-8B.
+ *
+ * Primary variables:
  * WHATSAPP_AI_BASE_URL, WHATSAPP_AI_API_KEY, WHATSAPP_AI_MODEL,
- * WHATSAPP_AI_ENABLED=true.
+ * WHATSAPP_AI_ENABLED=true
+ *
+ * Optional fallback variables:
+ * WHATSAPP_AI_FALLBACK_BASE_URL, WHATSAPP_AI_FALLBACK_API_KEY,
+ * WHATSAPP_AI_FALLBACK_MODEL
  */
 
-export const WHATSAPP_AI_SYSTEM_PROMPT = `Anda adalah asisten digital ASNET yang membantu perusahaan, sekolah, dan hotel memahami kebutuhan internet, upgrade jaringan/perangkat, Data Center, dan server.
+export const WHATSAPP_AI_SYSTEM_PROMPT = `Anda adalah asisten digital ASNET yang membantu perusahaan, sekolah, dan hotel memahami kebutuhan internet, upgrade jaringan/perangkat, Data Center, dan server. Anda nantinya dihubungkan dengan rekanan kami Bapak Pane.
 
 Aturan wajib:
-- Gunakan Bahasa Indonesia yang sopan, jelas, dan ringkas.
+- Gunakan Bahasa Indonesia yang sopan, jelas, ringkas, dan terdengar alami seperti percakapan manusia.
 - Jangan menyebut harga, diskon, tarif, SLA, garansi, kontrak, atau janji ketersediaan.
-- Jangan mengaku sebagai manusia; sebut diri sebagai asisten digital ASNET bila perlu.
+- Jangan mengaku sebagai manusia. Sebut diri sebagai asisten digital ASNET bila perlu.
+- Jangan menampilkan tag  thinking, proses berpikir, atau catatan internal.
 - Fokus menggali kebutuhan: jenis layanan, kapasitas/kuota internet, perangkat, Data Center/server, lokasi, dan waktu.
-- Ajukan paling banyak dua pertanyaan dalam satu balasan.
+- Ajukan paling banyak dua pertanyaan dalam satu balasan. Jangan mengulang sapaan di setiap pesan.
 - Jika client meminta harga, penawaran, kontrak, komplain, atau berbicara dengan manusia, arahkan ke tim ASNET dan katakan bahwa pemilik akan menghubungi dari nomor WhatsApp pribadi.
 - Jika client meminta berhenti, hormati permintaan itu dan jangan mendorong percakapan lagi.
-- Jangan mengarang fakta tentang perusahaan client atau layanan ASNET.
+- Jangan mengarang fakta tentang perusahaan client, layanan ASNET, atau Bapak Pane.
 - Jangan membahas topik di luar layanan ASNET.`;
 
 function clean(value) {
   return typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
 }
 
-export function whatsappAiConfig(env = {}) {
-  const baseUrl = clean(env.WHATSAPP_AI_BASE_URL).replace(/\/+$/, "");
+function providerConfig(env, prefix) {
   return {
-    baseUrl,
-    apiKey: clean(env.WHATSAPP_AI_API_KEY),
-    model: clean(env.WHATSAPP_AI_MODEL),
+    baseUrl: clean(env[`${prefix}BASE_URL`]).replace(/\/+$/, ""),
+    apiKey: clean(env[`${prefix}API_KEY`]),
+    model: clean(env[`${prefix}MODEL`]),
+  };
+}
+
+function providerReady(provider) {
+  return Boolean(
+    /^https?:\/\//i.test(provider.baseUrl) && provider.apiKey && provider.model,
+  );
+}
+
+export function whatsappAiConfig(env = {}) {
+  const primary = providerConfig(env, "WHATSAPP_AI_");
+  const fallback = providerConfig(env, "WHATSAPP_AI_FALLBACK_");
+  return {
+    ...primary,
     enabled: clean(env.WHATSAPP_AI_ENABLED).toLowerCase() === "true",
+    fallback: {
+      ...fallback,
+      configured: providerReady(fallback),
+    },
   };
 }
 
 export function whatsappAiConfigured(env = {}) {
   const config = whatsappAiConfig(env);
   return Boolean(
-    config.enabled &&
-      /^https?:\/\//i.test(config.baseUrl) &&
-      config.apiKey &&
-      config.model,
+    config.enabled && (providerReady(config) || config.fallback.configured),
   );
 }
 
 function endpoint(baseUrl) {
   if (/\/chat\/completions$/i.test(baseUrl)) return baseUrl;
   return `${baseUrl}/chat/completions`;
+}
+
+async function callProvider(provider, messages, options = {}) {
+  const body = {
+    model: provider.model,
+    messages,
+    temperature: Number(options.temperature) || 0.3,
+    max_tokens: Math.max(80, Math.min(600, Number(options.maxTokens) || 320)),
+    stream: false,
+  };
+  try {
+    const response = await fetch(endpoint(provider.baseUrl), {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${provider.apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(Number(options.timeoutMs) || 20_000),
+    });
+    const text = await response.text();
+    let payload = null;
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      /* respons non-JSON ditangani di bawah */
+    }
+    if (!response.ok) {
+      const detail =
+        payload?.error?.message ||
+        payload?.message ||
+        text.slice(0, 300) ||
+        `HTTP ${response.status}`;
+      return { ok: false, status: response.status, error: String(detail) };
+    }
+    const content = clean(payload?.choices?.[0]?.message?.content);
+    if (!content) {
+      return { ok: false, error: "AI tidak mengembalikan balasan." };
+    }
+    return {
+      ok: true,
+      content,
+      model: clean(payload?.model) || provider.model,
+      usage: payload?.usage || null,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      uncertain: true,
+      error: error instanceof Error ? error.message : "AI tidak dapat dihubungi.",
+    };
+  }
 }
 
 /**
@@ -77,55 +150,37 @@ export async function generateWhatsAppAiReply(env, messages, options = {}) {
   if (!safeMessages.length) {
     return { ok: false, configured: true, error: "Pesan AI kosong." };
   }
-  const body = {
+
+  const primary = {
+    baseUrl: config.baseUrl,
+    apiKey: config.apiKey,
     model: config.model,
-    messages: safeMessages,
-    temperature: 0.3,
-    max_tokens: Math.max(80, Math.min(600, Number(options.maxTokens) || 320)),
-    stream: false,
   };
-  try {
-    const response = await fetch(endpoint(config.baseUrl), {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${config.apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(Number(options.timeoutMs) || 20_000),
-    });
-    const text = await response.text();
-    let payload = null;
-    try {
-      payload = JSON.parse(text);
-    } catch {
-      /* respons non-JSON ditangani di bawah */
-    }
-    if (!response.ok) {
-      const detail =
-        payload?.error?.message ||
-        payload?.message ||
-        text.slice(0, 300) ||
-        `HTTP ${response.status}`;
-      return { ok: false, configured: true, status: response.status, error: String(detail) };
-    }
-    const content = clean(payload?.choices?.[0]?.message?.content);
-    if (!content) {
-      return { ok: false, configured: true, error: "AI tidak mengembalikan balasan." };
-    }
+  const primaryResult = providerReady(primary)
+    ? await callProvider(primary, safeMessages, options)
+    : { ok: false, error: "Provider utama AI belum lengkap." };
+  if (primaryResult.ok) {
+    return { ...primaryResult, configured: true, route: "primary" };
+  }
+
+  const fallback = {
+    baseUrl: config.fallback.baseUrl,
+    apiKey: config.fallback.apiKey,
+    model: config.fallback.model,
+  };
+  if (providerReady(fallback)) {
+    const fallbackResult = await callProvider(fallback, safeMessages, options);
     return {
-      ok: true,
+      ...fallbackResult,
       configured: true,
-      content,
-      model: clean(payload?.model) || config.model,
-      usage: payload?.usage || null,
-    };
-  } catch (error) {
-    return {
-      ok: false,
-      configured: true,
-      uncertain: true,
-      error: error instanceof Error ? error.message : "AI tidak dapat dihubungi.",
+      route: "fallback",
+      primaryError: primaryResult.error,
     };
   }
+
+  return {
+    ...primaryResult,
+    configured: true,
+    route: "primary",
+  };
 }
