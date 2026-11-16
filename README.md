@@ -185,7 +185,28 @@ dan sengaja belum dihubungkan ke webhook atau pengiriman. Draft ini:
 
 Agen ini belum aktif dan tidak memakai Jenova berbayar. Pengaktifan menunggu
 nama gateway WhatsApp, nomor pengirim, template yang disetujui, serta keputusan
-penyedia AI. Satu pengingat setelah 24 jam direncanakan, tetapi belum dijalankan.
+penyedia AI. Satu pengingat setelah 24 jam sudah dijadwalkan di data draft,
+tetapi belum dikirim.
+
+**Adapter AI.** `worker/whatsapp-ai.js` memakai bentuk OpenAI-compatible dan
+belum dihubungkan ke agen. Isi lewat Sites → Secrets bila endpoint sudah dipilih:
+
+- `WHATSAPP_AI_BASE_URL` — contoh Groq `https://api.groq.com/openai/v1`, atau
+  Ollama milik sendiri `https://llm.domain-anda.com/v1`.
+- `WHATSAPP_AI_API_KEY` — API key endpoint tersebut. Ollama lokal dapat memakai
+  nilai placeholder, tetapi endpoint yang menghadap internet sebaiknya diberi
+  autentikasi sendiri.
+- `WHATSAPP_AI_MODEL` — contoh `qwen/qwen3.8-27b` di Groq atau `qwen3:8b` di
+  Ollama.
+- `WHATSAPP_AI_ENABLED` — isi `true` setelah endpoint dan model diuji.
+
+Opsi gratis yang paling praktis: **Groq free tier** untuk endpoint hosted, atau
+**Ollama + Qwen3-8B** (Apache 2.0) di VPS/PC terpisah. Ollama tidak dapat berjalan
+di dalam Worker Cloudflare; Worker hanya memanggil endpoint HTTPS-nya. Model 7B–8B
+kuantisasi membutuhkan sekitar 8–16 GB RAM untuk CPU yang lambat; untuk percakapan
+langsung, GPU atau endpoint Groq lebih realistis. Endpoint gratis dapat memiliki
+batas harian dan kebijakan retensi; jangan kirim data client sebelum kebijakan
+privasi endpoint ditinjau.
 
 **Pemicu 24/7.** Worker tidak hidup terus-menerus. Halaman Robot AI dan Corporate
 Engine menjalankan heartbeat saat dibuka, dan tombol **Jalankan sekarang**
