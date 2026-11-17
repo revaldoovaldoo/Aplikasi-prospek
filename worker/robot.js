@@ -15,6 +15,7 @@
  */
 
 import {
+  coordinateReadyForPublish,
   ensureCorporateSchema,
   exaSearch,
   readPublicText,
@@ -1244,21 +1245,19 @@ async function flushTelegramOutbox(db, env, settings, limit = 2, onlyId = "") {
 }
 
 function telegramLeadReady(lead) {
-  // Telegram hanya mensyaratkan nama PIC yang lolos gate, peran yang bukan
-  // resepsionis/customer service, dan minimal satu nomor PIC valid. E-mail dan
-  // website boleh kosong; koordinat selalu diisi dari entitas atau pusat
-  // wilayah oleh resolveLeadCoordinates.
+  // Telegram hanya boleh membawa titik entitas yang sudah jelas sumbernya.
+  // Pusat wilayah dan hasil geocoding jalan tidak cukup untuk publikasi.
   return Boolean(
     sanitizePicName(lead.contactName) &&
       isPicRole(lead.contactRole) &&
-      validPicPhone(lead.phone),
+      validPicPhone(lead.phone) &&
+      coordinateReadyForPublish(lead),
   );
 }
 
 function prospectLeadReady(lead) {
-  // Penulis Prospek menerima lead yang sama dengan yang sudah dikirim Kurir
-  // Telegram. Website, e-mail, dan koordinat presisi boleh belum tersedia;
-  // jangan jadikan field itu penghalang tambahan setelah pesan terkirim.
+  // Penulis Prospek menerima lead yang sama dengan Kurir Telegram. E-mail dan
+  // website boleh kosong, tetapi koordinat harus lolos gate yang sama.
   return telegramLeadReady(lead);
 }
 
@@ -1481,7 +1480,8 @@ export async function auditTelegramProspects(db, ownerId) {
   }
   const rows = await db
     .prepare(
-      `SELECT l.id AS lead_id, l.name, l.contact_name, l.phone,
+      `SELECT l.id AS lead_id, l.name, l.city, l.area, l.contact_name, l.phone,
+              l.latitude, l.longitude, l.coordinate_address, l.coordinate_source,
               j.stage AS job_stage, j.attempts AS job_attempts,
               j.last_error AS job_last_error,
               j.telegram_sent_at, j.published_at,
@@ -1538,6 +1538,8 @@ export async function auditTelegramProspects(db, ownerId) {
     else if (!sanitizePicName(row.contact_name)) reason = "Nama PIC kosong.";
     else if (!validPicPhone(row.phone)) {
       reason = "Nomor PIC kosong atau tidak valid.";
+    } else if (!coordinateReadyForPublish(rowToLead(row))) {
+      reason = "Koordinat entitas belum tepat atau belum dikonfirmasi.";
     } else if (row.job_stage === "publish_prospect") {
       queued += 1;
       continue;
@@ -1711,7 +1713,7 @@ export async function publishLeadToProspect(db, ownerId, lead) {
   if (!prospectLeadReady(lead)) {
     return {
       added: false,
-      reason: "Nama PIC atau nomor PIC belum lengkap.",
+      reason: "Nama PIC, nomor PIC, atau koordinat entitas belum lengkap.",
     };
   }
   const latitude = Number(lead.latitude);
@@ -2068,7 +2070,7 @@ async function advanceJob(db, row, env, settings, ownerId) {
           attempts,
           last_error:
             telegram.error ||
-            "Telegram selesai; nama PIC atau nomor PIC belum lengkap.",
+            "Telegram selesai; nama PIC, nomor PIC, atau koordinat entitas belum lengkap.",
           next_run_at: exhausted ? addDays(1) : addHours(2),
         });
         return {
@@ -2107,7 +2109,7 @@ async function advanceJob(db, row, env, settings, ownerId) {
           contact_evidence: JSON.stringify(contactEvidence),
           attempts,
           last_error:
-            "Nama PIC atau nomor PIC belum lengkap; lead dikembalikan ke Klarifikasi.",
+            "Nama PIC, nomor PIC, atau koordinat entitas belum lengkap; lead dikembalikan ke Klarifikasi.",
           next_run_at: exhausted ? addDays(1) : addHours(2),
         });
         return {

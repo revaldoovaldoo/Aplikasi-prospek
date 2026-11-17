@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { isPicRole, sanitizePicName } from "../worker/corporate.js";
+import {
+  coordinateCandidateMatchesName,
+  coordinateReadyForPublish,
+  isPicRole,
+  isRoadCoordinate,
+  sanitizePicName,
+} from "../worker/corporate.js";
 
 test("sanitizePicName membersihkan pecahan JSON yang rusak", () => {
   assert.equal(
@@ -86,6 +92,64 @@ test("sanitizePicName menolak beberapa nama dalam satu field", () => {
   assert.equal(
     sanitizePicName("Indri Lurita Sari Director of Sales Marketing Beta Desiana HR Manager Agus Santo"),
     "",
+  );
+});
+
+test("geocoder menolak nama jalan dan hanya menerima entitas yang cocok", () => {
+  assert.equal(
+    coordinateCandidateMatchesName(
+      "Lazuardi Global Islamic School",
+      "Lazuardi Global Islamic School, Limo, Depok",
+    ),
+    true,
+  );
+  assert.equal(
+    coordinateCandidateMatchesName(
+      "Lazuardi Global Islamic School",
+      "Jalan Garuda Ujung, Limo, Depok",
+    ),
+    false,
+  );
+  assert.equal(
+    isRoadCoordinate({ type: "residential", class: "highway" }),
+    true,
+  );
+  assert.equal(isRoadCoordinate({ type: "school", class: "amenity" }), false);
+});
+
+test("koordinat publikasi harus berasal dari entitas atau koreksi manual", () => {
+  const lead = {
+    city: "Depok",
+    latitude: -6.3569892,
+    longitude: 106.7802015,
+  };
+  assert.equal(
+    coordinateReadyForPublish({
+      ...lead,
+      coordinateSource: "Nominatim/OpenStreetMap (nama cocok)",
+    }),
+    true,
+  );
+  assert.equal(
+    coordinateReadyForPublish({
+      ...lead,
+      coordinateSource: "Dikonfirmasi manual",
+    }),
+    true,
+  );
+  assert.equal(
+    coordinateReadyForPublish({
+      ...lead,
+      coordinateSource: "Nominatim/OpenStreetMap",
+    }),
+    false,
+  );
+  assert.equal(
+    coordinateReadyForPublish({
+      ...lead,
+      coordinateSource: "Pusat wilayah Depok",
+    }),
+    false,
   );
 });
 

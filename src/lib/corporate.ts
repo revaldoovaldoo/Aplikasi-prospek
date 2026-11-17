@@ -261,20 +261,49 @@ export function isApproximateCoordinate(lead: {
   return /^Pusat wilayah\b/i.test(lead.coordinateSource?.trim() || "");
 }
 
-export function isLeadComplete(lead: CorporateLead): boolean {
+/**
+ * Sumber yang boleh dianggap titik entitas. Hasil geocoding jalan, pusat
+ * wilayah, dan panel AI tanpa konfirmasi tetap berstatus "review".
+ */
+export function coordinateReviewStatus(lead: {
+  latitude?: number;
+  longitude?: number;
+  coordinateSource?: string;
+}): "verified" | "review" | "missing" {
   const latitude = Number(lead.latitude);
   const longitude = Number(lead.longitude);
+  const valid =
+    Number.isFinite(latitude) &&
+    Number.isFinite(longitude) &&
+    latitude !== 0 &&
+    longitude !== 0 &&
+    Math.abs(latitude) <= 90 &&
+    Math.abs(longitude) <= 180;
+  if (!valid || isApproximateCoordinate(lead)) return "missing";
+  const source = lead.coordinateSource?.trim() || "";
+  return /^(?:Dikonfirmasi manual\b|OpenStreetMap node\b|Nominatim\/OpenStreetMap \(nama cocok\))/i.test(
+    source,
+  )
+    ? "verified"
+    : "review";
+}
+
+export function isCoordinateReviewRequired(lead: {
+  latitude?: number;
+  longitude?: number;
+  coordinateSource?: string;
+}): boolean {
+  return coordinateReviewStatus(lead) !== "verified";
+}
+
+export function isLeadComplete(lead: CorporateLead): boolean {
   return Boolean(
     lead.validationStatus === "verified" &&
       lead.website?.trim() &&
       lead.email?.trim() &&
       lead.phone?.trim() &&
       lead.contactName?.trim() &&
-      !isApproximateCoordinate(lead) &&
-      Number.isFinite(latitude) &&
-      latitude !== 0 &&
-      Number.isFinite(longitude) &&
-      longitude !== 0,
+      coordinateReviewStatus(lead) === "verified",
   );
 }
 

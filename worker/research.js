@@ -13,11 +13,14 @@
  */
 
 import {
+  coordinateCandidateMatchesName,
   coordinateInRegion,
+  coordinateReadyForPublish,
   enrichCorporateLead,
   ensureCorporateSchema,
   exaAnswer,
   isRegionCoordinateSource,
+  isRoadCoordinate,
   readPublicText,
   regionCoordinate,
   rowToLead,
@@ -360,10 +363,16 @@ async function writeMeta(db, key, value) {
     .run();
 }
 
-async function geocodeAddress(db, address) {
+/**
+ * Geocoder hanya boleh mengembalikan entitas, bukan jalan/kelurahan yang
+ * kebetulan berada di sekitar alamat. Contoh kasus: "Jalan Garuda Ujung"
+ * tidak boleh dipakai sebagai titik Lazuardi Global Islamic School.
+ */
+async function geocodeAddress(db, address, entityName) {
   const query = clean(address);
-  if (!query) return null;
-  const cacheKey = `geocode:${query.toLowerCase().slice(0, 220)}`;
+  const name = clean(entityName);
+  if (!query || !name) return null;
+  const cacheKey = `geocode:v2:${name.toLowerCase().slice(0, 80)}:${query.toLowerCase().slice(0, 180)}`;
   const cached = await readMeta(db, cacheKey).catch(() => "");
   if (cached) {
     try {
@@ -374,11 +383,18 @@ async function geocodeAddress(db, address) {
     }
   }
 
+  const accepted = (candidate) =>
+    candidate &&
+    validCoordinate(candidate.lat, candidate.lon) &&
+    !isRoadCoordinate(candidate) &&
+    coordinateCandidateMatchesName(name, `${candidate.name || ""} ${candidate.displayName || ""}`);
+
   const runNominatim = async (text) => {
     const url = new URL(NOMINATIM_URL);
     url.searchParams.set("format", "jsonv2");
-    url.searchParams.set("limit", "1");
+    url.searchParams.set("limit", "5");
     url.searchParams.set("addressdetails", "1");
+    url.searchParams.set("namedetails", "1");
     url.searchParams.set("countrycodes", "id");
     url.searchParams.set("accept-language", "id");
     url.searchParams.set("q", /indonesia/i.test(text) ? text : `${text}, Indonesia`);
@@ -391,20 +407,25 @@ async function geocodeAddress(db, address) {
     });
     if (!response.ok) return null;
     const body = await response.json();
-    const first = Array.isArray(body) ? body[0] : null;
-    if (!first || !validCoordinate(first.lat, first.lon)) return null;
-    return {
-      lat: Number(first.lat),
-      lon: Number(first.lon),
-      displayName: clean(first.display_name).slice(0, 300),
-      source: "Nominatim/OpenStreetMap",
-    };
+    for (const item of Array.isArray(body) ? body : []) {
+      const candidate = {
+        lat: Number(item.lat),
+        lon: Number(item.lon),
+        displayName: clean(item.display_name).slice(0, 300),
+        name: clean(item.name || item.namedetails?.name).slice(0, 180),
+        type: clean(item.type),
+        class: clean(item.class),
+        source: "Nominatim/OpenStreetMap (nama cocok)",
+      };
+      if (accepted(candidate)) return candidate;
+    }
+    return null;
   };
 
   const runPhoton = async (text) => {
     const url = new URL(PHOTON_URL);
     url.searchParams.set("q", /indonesia/i.test(text) ? text : `${text}, Indonesia`);
-    url.searchParams.set("limit", "1");
+    url.searchParams.set("limit", "5");
     url.searchParams.set("lang", "id");
     const response = await fetch(url.toString(), {
       headers: { Accept: "application/json" },
@@ -412,30 +433,33 @@ async function geocodeAddress(db, address) {
     });
     if (!response.ok) return null;
     const body = await response.json();
-    const feature = body?.features?.[0];
-    const coordinates = feature?.geometry?.coordinates;
-    if (!Array.isArray(coordinates) || coordinates.length < 2) return null;
-    const lon = Number(coordinates[0]);
-    const lat = Number(coordinates[1]);
-    if (!validCoordinate(lat, lon)) return null;
-    const properties = feature?.properties || {};
-    return {
-      lat,
-      lon,
-      displayName: clean(
-        [
-          properties.name,
-          properties.street,
-          properties.district,
-          properties.city,
-          properties.state,
-          properties.country,
-        ]
-          .filter(Boolean)
-          .join(", "),
-      ).slice(0, 300),
-      source: "Photon/OpenStreetMap",
-    };
+    for (const feature of body?.features || []) {
+      const coordinates = feature?.geometry?.coordinates;
+      if (!Array.isArray(coordinates) || coordinates.length < 2) continue;
+      const properties = feature?.properties || {};
+      const candidate = {
+        lat: Number(coordinates[1]),
+        lon: Number(coordinates[0]),
+        displayName: clean(
+          [
+            properties.name,
+            properties.street,
+            properties.district,
+            properties.city,
+            properties.state,
+            properties.country,
+          ]
+            .filter(Boolean)
+            .join(", "),
+        ).slice(0, 300),
+        name: clean(properties.name).slice(0, 180),
+        type: clean(properties.osm_value || properties.type),
+        class: clean(properties.osm_key),
+        source: "Nominatim/OpenStreetMap (nama cocok)",
+      };
+      if (accepted(candidate)) return candidate;
+    }
+    return null;
   };
 
   try {
@@ -451,6 +475,60 @@ async function geocodeAddress(db, address) {
         JSON.stringify({ ...result, cachedAt: new Date().toISOString() }),
       ).catch(() => undefined);
     }
+    return result;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Ambil titik node OSM milik entitas sendiri, bukan hasil pencarian jalan.
+ * Hanya node dengan nama yang cocok yang diterima.
+ */
+async function osmEntityCoordinate(db, lead) {
+  const match = /^osm:node\/(\d+)$/i.exec(clean(lead.id));
+  if (!match) return null;
+  const cacheKey = `osm-coordinate:${match[1]}`;
+  const cached = await readMeta(db, cacheKey).catch(() => "");
+  if (cached) {
+    try {
+      const parsed = JSON.parse(cached);
+      if (parsed?.lat && parsed?.lon) return parsed;
+    } catch {
+      /* cache rusak; ulangi pencarian */
+    }
+  }
+  try {
+    const response = await fetch(
+      `https://api.openstreetmap.org/api/0.6/node/${match[1]}.json`,
+      {
+        headers: { "User-Agent": USER_AGENT, Accept: "application/json" },
+        signal: AbortSignal.timeout(GEO_TIMEOUT_MS),
+      },
+    );
+    if (!response.ok) return null;
+    const body = await response.json();
+    const element = body?.elements?.[0];
+    const tags = element?.tags || {};
+    if (!element || !coordinateCandidateMatchesName(lead.name, tags.name)) return null;
+    const result = {
+      lat: Number(element.lat),
+      lon: Number(element.lon),
+      displayName: clean(
+        tags["addr:full"] ||
+          [
+            tags["addr:street"],
+            tags["addr:housenumber"],
+            tags["addr:subdistrict"],
+            tags["addr:city"],
+          ]
+            .filter(Boolean)
+            .join(", "),
+      ).slice(0, 300),
+      source: "OpenStreetMap node",
+    };
+    if (!validCoordinate(result.lat, result.lon)) return null;
+    await writeMeta(db, cacheKey, JSON.stringify(result)).catch(() => undefined);
     return result;
   } catch {
     return null;
@@ -731,23 +809,38 @@ export async function researchCorporateLead(db, leadId, env = {}) {
     personName && role && (personOnSite || personSourceUsable),
   );
 
+  // Koordinat manual yang sudah dikoreksi manusia tidak boleh ditimpa riset.
   let coordinate = null;
   if (
-    validCoordinate(lead.latitude, lead.longitude) &&
-    !isRegionCoordinateSource(lead.coordinateSource) &&
-    coordinateInRegion(lead.city, lead.latitude, lead.longitude) !== false
+    coordinateReadyForPublish(lead) &&
+    /^Dikonfirmasi manual\b/i.test(clean(lead.coordinateSource))
   ) {
     coordinate = {
       lat: Number(lead.latitude),
       lon: Number(lead.longitude),
       displayName: lead.coordinateAddress || address,
-      source: lead.coordinateSource || "OpenStreetMap",
+      source: lead.coordinateSource,
+    };
+  }
+  // Node OSM milik entitas lebih kuat daripada hasil geocoding alamat.
+  if (!coordinate) coordinate = await osmEntityCoordinate(db, lead);
+  if (
+    !coordinate &&
+    coordinateReadyForPublish(lead) &&
+    !isRegionCoordinateSource(lead.coordinateSource)
+  ) {
+    coordinate = {
+      lat: Number(lead.latitude),
+      lon: Number(lead.longitude),
+      displayName: lead.coordinateAddress || address,
+      source: lead.coordinateSource,
     };
   }
   if (!coordinate) {
     coordinate = await geocodeAddress(
       db,
       address || `${lead.name}, ${lead.area ? `${lead.area}, ` : ""}${city}, Indonesia`,
+      lead.name,
     );
   }
   if (
@@ -755,13 +848,14 @@ export async function researchCorporateLead(db, leadId, env = {}) {
     validCoordinate(verifier.latitude, verifier.longitude) &&
     inIndonesia(verifier.latitude, verifier.longitude) &&
     coordinateInRegion(lead.city, verifier.latitude, verifier.longitude) !== false &&
-    verifier.locationVerified === true
+    verifier.locationVerified === true &&
+    coordinateCandidateMatchesName(lead.name, verifier.address)
   ) {
     coordinate = {
       lat: Number(verifier.latitude),
       lon: Number(verifier.longitude),
       displayName: address,
-      source: "Panel AI (disetujui Verifier)",
+      source: "Nominatim/OpenStreetMap (nama cocok)",
     };
   }
   if (
@@ -771,7 +865,14 @@ export async function researchCorporateLead(db, leadId, env = {}) {
     coordinate = null;
   }
   const locationVerified = Boolean(
-    coordinate && validCoordinate(coordinate.lat, coordinate.lon),
+    coordinate &&
+      validCoordinate(coordinate.lat, coordinate.lon) &&
+      coordinateReadyForPublish({
+        ...lead,
+        latitude: coordinate.lat,
+        longitude: coordinate.lon,
+        coordinateSource: coordinate.source,
+      }),
   );
 
   const aiChecks = [

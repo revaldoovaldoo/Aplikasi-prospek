@@ -77,6 +77,106 @@ export function isRegionCoordinateSource(source) {
   return /^Pusat wilayah\b/i.test(clean(source));
 }
 
+const NON_ENTITY_COORDINATE_TYPES = new Set([
+  "road",
+  "street",
+  "residential",
+  "tertiary",
+  "secondary",
+  "primary",
+  "trunk",
+  "motorway",
+  "service",
+  "unclassified",
+  "living_street",
+  "pedestrian",
+  "footway",
+  "cycleway",
+  "path",
+  "track",
+  "bus_stop",
+  "parking",
+  "parking_space",
+  "locality",
+  "administrative",
+  "city",
+  "town",
+  "village",
+  "suburb",
+  "neighbourhood",
+  "postcode",
+]);
+
+function coordinateNameTokens(name) {
+  return clean(name)
+    .toLowerCase()
+    .replace(
+      /\b(?:pt|cv|tbk|persero|ud|pd|hotel|resort|sekolah|school|sma|smk|smp|sd|universitas|university|institut|kampus|the|and|by)\b/g,
+      " ",
+    )
+    .split(/[^a-z0-9]+/)
+    .filter((token) => token.length >= 3);
+}
+
+/**
+ * Nama pada hasil geocoder harus memuat nama entitas, bukan hanya nama jalan.
+ * Ini mencegah “Jalan Garuda Ujung” dipakai sebagai lokasi Lazuardi.
+ */
+export function coordinateCandidateMatchesName(entityName, candidateName) {
+  const tokens = coordinateNameTokens(entityName);
+  if (tokens.length === 0) return false;
+  const haystack = clean(candidateName).toLowerCase();
+  const matched = tokens.filter((token) => haystack.includes(token));
+  return tokens.length === 1 ? matched.length === 1 : matched.length >= 2;
+}
+
+export function isRoadCoordinate(candidate = {}) {
+  const type = clean(candidate.type).toLowerCase();
+  const category = clean(candidate.class || candidate.category).toLowerCase();
+  return (
+    NON_ENTITY_COORDINATE_TYPES.has(type) ||
+    category === "highway" ||
+    category === "boundary" ||
+    category === "place"
+  );
+}
+
+function isManualCoordinateSource(source) {
+  return /^Dikonfirmasi manual\b/i.test(clean(source));
+}
+
+function isVerifiedCoordinateSource(source) {
+  const value = clean(source);
+  return (
+    isManualCoordinateSource(value) ||
+    /^OpenStreetMap node\b/i.test(value) ||
+    /^Nominatim\/OpenStreetMap \(nama cocok\)/i.test(value)
+  );
+}
+
+/** Status koordinat untuk gerbang Telegram, Prospek, dan tampilan dashboard. */
+export function coordinateReviewStatus(lead = {}) {
+  const latitude = Number(lead.latitude);
+  const longitude = Number(lead.longitude);
+  const valid =
+    Number.isFinite(latitude) &&
+    Number.isFinite(longitude) &&
+    latitude >= -90 &&
+    latitude <= 90 &&
+    longitude >= -180 &&
+    longitude <= 180 &&
+    !(latitude === 0 && longitude === 0) &&
+    coordinateInRegion(lead.city, latitude, longitude) !== false;
+  if (!valid) return "missing";
+  if (isRegionCoordinateSource(lead.coordinateSource)) return "missing";
+  return isVerifiedCoordinateSource(lead.coordinateSource) ? "verified" : "review";
+}
+
+/** Hanya koordinat entitas yang sudah jelas sumbernya yang boleh dipublikasikan. */
+export function coordinateReadyForPublish(lead = {}) {
+  return coordinateReviewStatus(lead) === "verified";
+}
+
 /**
  * True/false bila kota dikenal; null bila kota tidak ada di daftar wilayah.
  * Padding kecil memberi ruang untuk entitas di pinggir bbox.

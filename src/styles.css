@@ -1605,6 +1605,24 @@ a {
   color: var(--muted);
 }
 
+.coordinate-confirm {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin-top: 2px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+
+.coordinate-confirm input {
+  width: 14px;
+  height: 14px;
+  margin: 1px 0 0;
+  flex: 0 0 auto;
+}
+
 .form-error {
   margin-top: 12px;
   padding: 9px 11px;

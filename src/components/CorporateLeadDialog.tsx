@@ -1,4 +1,5 @@
 import {
+  coordinateReviewStatus,
   isApproximateCoordinate,
   websiteHost,
   type CorporateLead,
@@ -35,6 +36,7 @@ export default function CorporateLeadDialog({
 }: Props) {
   const hasContact = Boolean(lead?.email || lead?.phone || lead?.contactName);
   const approximateCoordinate = Boolean(lead && isApproximateCoordinate(lead));
+  const coordinateStatus = lead ? coordinateReviewStatus(lead) : "missing";
 
   return (
     <Modal
@@ -78,6 +80,15 @@ export default function CorporateLeadDialog({
               Koordinat yang tersedia masih pusat wilayah, bukan koordinat entitas.
               Lead ini belum dapat masuk Prospek sampai koordinat asli atau koordinat
               yang tervalidasi wilayah tersedia.
+            </p>
+          ) : null}
+
+          {coordinateStatus === "review" ? (
+            <p className="robot-note">
+              Titik ini berasal dari pencarian alamat dan belum tentu lokasi entitas.
+              Setelah masuk Prospek, buka <strong>Edit data perusahaan</strong> dan
+              masukkan koordinat yang benar dari Google Maps. Lead dengan titik
+              berstatus perlu dicek tidak akan dikirim ke Telegram.
             </p>
           ) : null}
           <div className="lead-detail-row">

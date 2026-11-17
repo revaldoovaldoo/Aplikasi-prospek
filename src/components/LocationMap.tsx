@@ -1,3 +1,4 @@
+import { coordinateReviewStatus } from "../lib/corporate";
 import { PinIcon } from "./icons";
 
 interface Props {
@@ -31,7 +32,12 @@ export default function LocationMap({
 
   const mapsUrl = googleMapsUrl(lat, lng);
   const label = address?.trim() || `${lat}, ${lng}`;
-  const approximate = /^Pusat wilayah\b/i.test(source?.trim() || "");
+  const status = coordinateReviewStatus({
+    latitude: lat,
+    longitude: lng,
+    coordinateSource: source,
+  });
+  const approximate = status === "missing" && /^Pusat wilayah\b/i.test(source?.trim() || "");
 
   return (
     <section className="location-map" aria-label="Lokasi di Google Maps">
@@ -41,7 +47,11 @@ export default function LocationMap({
         </span>
         <div>
           <strong>
-            {approximate ? "Lokasi perkiraan wilayah" : "Lokasi terverifikasi"}
+            {approximate
+              ? "Lokasi perkiraan wilayah"
+              : status === "verified"
+                ? "Lokasi terverifikasi"
+                : "Titik lokasi perlu dicek"}
           </strong>
           <span>{label}</span>
         </div>

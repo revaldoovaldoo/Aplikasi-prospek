@@ -11,7 +11,7 @@ import {
   type CompanyStatus,
 } from "../lib/data";
 import { downloadUrl, pdfUrl } from "../lib/api";
-import { websiteHost } from "../lib/corporate";
+import { coordinateReviewStatus, websiteHost } from "../lib/corporate";
 import LocationMap, { googleMapsUrl } from "./LocationMap";
 import StatusBadge from "./StatusBadge";
 import PdfPrintDialog from "./PdfPrintDialog";
@@ -146,6 +146,7 @@ export default function CompanyDrawer({
     mapLatitude !== 0 &&
     Number.isFinite(mapLongitude) &&
     mapLongitude !== 0;
+  const mapStatus = coordinateReviewStatus(company);
   const mapsHref = hasMapCoordinate
     ? googleMapsUrl(mapLatitude, mapLongitude)
     : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
@@ -259,6 +260,15 @@ export default function CompanyDrawer({
             address={company.coordinateAddress}
             source={company.coordinateSource}
           />
+
+          {mapStatus !== "verified" ? (
+            <div className="lead-validation-warn">
+              Titik koordinat ini belum dikonfirmasi sebagai lokasi entitas. Hasil
+              pencarian alamat bisa menunjuk jalan di sekitar sekolah/perusahaan.
+              Buka <strong>Edit data perusahaan</strong> dan masukkan koordinat dari
+              Google Maps sebelum titik ini dipakai untuk kunjungan atau publikasi.
+            </div>
+          ) : null}
 
           {company.validationStatus === "verified" ? (
             <div className="lead-validation-ok">

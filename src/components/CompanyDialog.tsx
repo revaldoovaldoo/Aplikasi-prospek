@@ -1,5 +1,9 @@
 import { useEffect, useState } from "react";
 import type { Company } from "../types";
+import {
+  formatCoordinateInput,
+  parseCoordinateInput,
+} from "../lib/coordinates";
 import { todayISO } from "../lib/data";
 import { Modal } from "./Dialogs";
 
@@ -33,6 +37,9 @@ export default function CompanyDialog({
   const [errors, setErrors] = useState<{ name?: string; location?: string }>({});
   const [addingLocation, setAddingLocation] = useState(false);
   const [newLocation, setNewLocation] = useState("");
+  const [coordinateInput, setCoordinateInput] = useState("");
+  const [coordinateConfirmed, setCoordinateConfirmed] = useState(false);
+  const [coordinateError, setCoordinateError] = useState("");
 
   useEffect(() => {
     if (!open) return;
@@ -58,6 +65,13 @@ export default function CompanyDialog({
     setErrors({});
     setAddingLocation(false);
     setNewLocation("");
+    setCoordinateInput(
+      formatCoordinateInput(initial?.latitude, initial?.longitude),
+    );
+    setCoordinateConfirmed(
+      /^Dikonfirmasi manual\b/i.test(initial?.coordinateSource || ""),
+    );
+    setCoordinateError("");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, initial?.id]);
 
@@ -88,6 +102,25 @@ export default function CompanyDialog({
     if (Object.keys(nextErrors).length > 0) return;
 
     const website = form.website?.trim() ?? "";
+    const coordinateText = coordinateInput.trim();
+    const coordinate = coordinateText ? parseCoordinateInput(coordinateText) : null;
+    if (coordinateText && !coordinate) {
+      setCoordinateError(
+        "Koordinat tidak valid. Salin angka seperti -6.356989, 106.780201 dari Google Maps.",
+      );
+      return;
+    }
+    const originalCoordinate = formatCoordinateInput(
+      initial?.latitude,
+      initial?.longitude,
+    );
+    const coordinateChanged = coordinateText !== originalCoordinate;
+    if (coordinate && (coordinateChanged || coordinateConfirmed) && !coordinateConfirmed) {
+      setCoordinateError(
+        "Centang konfirmasi setelah mencocokkan titik di Google Maps.",
+      );
+      return;
+    }
     onSave({
       name: form.name.trim(),
       location: form.location,
@@ -95,6 +128,15 @@ export default function CompanyDialog({
       picPhone: form.picPhone.trim(),
       website: website && !/^https?:\/\//i.test(website) ? `https://${website}` : website,
       visitDate: form.visitDate,
+      ...(coordinate && coordinateConfirmed
+        ? {
+            latitude: coordinate.latitude,
+            longitude: coordinate.longitude,
+            coordinateSource: "Dikonfirmasi manual",
+            coordinateAddress:
+              initial?.coordinateAddress?.trim() || form.location,
+          }
+        : {}),
     });
   };
 
@@ -228,6 +270,43 @@ export default function CompanyDialog({
             placeholder="https://perusahaan.com"
             onChange={(e) => update("website", e.target.value)}
           />
+        </div>
+
+        <div className="field field-full">
+          <label htmlFor="company-coordinate">
+            Titik koordinat <span className="optional">(opsional)</span>
+          </label>
+          <input
+            id="company-coordinate"
+            type="text"
+            value={coordinateInput}
+            placeholder="-6.356989, 106.780201"
+            onChange={(e) => {
+              setCoordinateInput(e.target.value);
+              setCoordinateConfirmed(false);
+              setCoordinateError("");
+            }}
+          />
+          <span className="field-hint">
+            Buka lokasi di Google Maps, salin angka koordinatnya (bukan link pendek),
+            lalu tempel di sini. Titik ini dipakai untuk tombol lokasi di Prospek.
+          </span>
+          {coordinateInput.trim() ? (
+            <label className="coordinate-confirm">
+              <input
+                type="checkbox"
+                checked={coordinateConfirmed}
+                onChange={(e) => {
+                  setCoordinateConfirmed(e.target.checked);
+                  setCoordinateError("");
+                }}
+              />
+              Saya sudah mencocokkan titik ini dengan lokasi sebenarnya.
+            </label>
+          ) : null}
+          {coordinateError ? (
+            <span className="field-error">{coordinateError}</span>
+          ) : null}
         </div>
       </div>
     </Modal>

@@ -128,6 +128,15 @@ Robot tidak mengakses CCTV, kamera, akun sosial media pribadi, atau area yang
 membutuhkan login. Verifikasi hanya memakai sumber publik dan data bisnis yang
 memang dipublikasikan.
 
+**Validasi koordinat.** Robot tidak lagi memakai hasil geocoder yang hanya
+menemukan nama jalan. Titik harus cocok dengan nama entitas (misalnya
+“Lazuardi Global Islamic School”, bukan “Jalan Garuda Ujung”), berasal dari node
+OpenStreetMap entitas, atau dikonfirmasi manual dari Google Maps. Koordinat pusat
+wilayah dan hasil pencarian alamat yang belum cocok ditandai **perlu dicek** dan
+tidak dikirim ke Telegram atau ditulis ke Prospek otomatis. Di kartu Prospek,
+buka **Edit data perusahaan**, tempel koordinat dari Google Maps, lalu centang
+konfirmasi. Banner di halaman Prospek menampilkan jumlah titik yang perlu dicek.
+
 **Konfigurasi.** Tambahkan lewat Sites → Secrets, jangan menuliskan nilainya di
 dalam file proyek:
 

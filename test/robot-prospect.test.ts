@@ -18,6 +18,9 @@ test("Kurir Telegram menolak nama resepsionis, placeholder, dan beberapa nama", 
     city: "Jakarta",
     category: "hotel",
     phone: "08123456789",
+    latitude: -6.2,
+    longitude: 106.8,
+    coordinateSource: "OpenStreetMap node",
   };
   assert.equal(
     buildTelegramMessage({
@@ -109,6 +112,7 @@ const lead = {
   validationStatus: "partial",
   latitude: -6.6,
   longitude: 106.8,
+  coordinateSource: "OpenStreetMap node",
 };
 
 test("Penulis Prospek menyimpan lead yang sudah lolos syarat Telegram", async () => {
@@ -249,8 +253,8 @@ function fakeAuditDb(companies: Record<string, unknown>[], rows: Record<string, 
 test("Audit Telegram menjelaskan lead yang belum masuk Prospek", async () => {
   const rows = [
     { lead_id: "in", name: "Hotel A", contact_name: "Ani", phone: "081234567890", job_stage: "done" },
-    { lead_id: "eligible", name: "Hotel B", contact_name: "Budi", phone: "081234567891", job_stage: "done" },
-    { lead_id: "queued", name: "Hotel C", contact_name: "Cici", phone: "081234567892", job_stage: "publish_prospect" },
+    { lead_id: "eligible", name: "Hotel B", contact_name: "Budi", phone: "081234567891", job_stage: "done", city: "Jakarta", latitude: -6.2, longitude: 106.8, coordinate_source: "OpenStreetMap node" },
+    { lead_id: "queued", name: "Hotel C", contact_name: "Cici", phone: "081234567892", job_stage: "publish_prospect", city: "Jakarta", latitude: -6.2, longitude: 106.8, coordinate_source: "OpenStreetMap node" },
     { lead_id: "no-pic", name: "Hotel D", contact_name: "", phone: "081234567893", job_stage: "paused" },
     { lead_id: "bad-phone", name: "Hotel E", contact_name: "Eka", phone: "", job_stage: "paused" },
   ];
@@ -337,7 +341,7 @@ test("Audit terbalik memisahkan Prospek lama dan antrean yang tidak sinkron", as
 
 test("Rekonsiliasi hanya memasukkan lead terkirim yang memenuhi syarat", async () => {
   const rows = [
-    { lead_id: "eligible", name: "Hotel B", contact_name: "Budi", phone: "081234567891", job_stage: "done" },
+    { lead_id: "eligible", name: "Hotel B", contact_name: "Budi", phone: "081234567891", job_stage: "done", city: "Jakarta", latitude: -6.2, longitude: 106.8, coordinate_source: "OpenStreetMap node" },
     { lead_id: "no-pic", name: "Hotel D", contact_name: "", phone: "081234567893", job_stage: "paused" },
   ];
   const db = fakeAuditDb([], rows);
@@ -346,6 +350,21 @@ test("Rekonsiliasi hanya memasukkan lead terkirim yang memenuhi syarat", async (
   assert.equal(result.requeued, 1);
   assert.deepEqual(db.updates, ["eligible"]);
   assert.equal(result.notEligible, 1);
+});
+
+test("Kurir Telegram menolak koordinat yang belum dikonfirmasi", () => {
+  const message = buildTelegramMessage({
+    name: "Lazuardi Global Islamic School",
+    city: "Depok",
+    category: "school",
+    contactName: "Budi Santoso",
+    contactRole: "Kepala Sekolah",
+    phone: "08123456789",
+    latitude: -6.3562728,
+    longitude: 106.7804875,
+    coordinateSource: "Nominatim/OpenStreetMap",
+  });
+  assert.equal(message, "");
 });
 
 test("Prospek robot tidak dibuang hanya karena e-mail/website kosong", () => {

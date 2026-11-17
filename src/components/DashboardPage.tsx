@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import type { Company, QuoteRecord } from "../types";
+import { coordinateReviewStatus } from "../lib/corporate";
 import {
   companyStatusOf,
   formatCompactIDR,
@@ -91,6 +92,15 @@ export default function DashboardPage({
   const lost = lostEntries(companies, quotes);
   const lostCount = lost.length;
   const lostThisMonth = lost.filter((entry) => entry.lostAt.startsWith(monthKey)).length;
+  const coordinatesToReview = companies.filter((company) => {
+    const status = coordinateReviewStatus(company);
+    return (
+      status === "review" ||
+      (status === "missing" &&
+        Boolean(Number(company.latitude)) &&
+        Boolean(Number(company.longitude)))
+    );
+  }).length;
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -124,6 +134,17 @@ export default function DashboardPage({
           </button>
         </div>
       </header>
+
+      {coordinatesToReview > 0 ? (
+        <div className="corporate-banner corporate-banner-warn" role="status">
+          <AlertIcon size={15} />
+          <span>
+            {coordinatesToReview} prospek punya titik koordinat yang perlu dicek.
+            Buka kartu prospek, lihat peta, lalu pilih <strong>Edit data perusahaan</strong>
+            untuk mengonfirmasi titik yang benar.
+          </span>
+        </div>
+      ) : null}
 
       <div className="stats stats-4">
         <div className="stat stat-clickable">
