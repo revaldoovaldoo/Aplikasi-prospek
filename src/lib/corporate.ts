@@ -128,6 +128,11 @@ export interface CorporateLead {
   validationEvidence?: string[];
   validatedAt?: string;
   aiConfidence?: number;
+  screeningStatus?: "clear" | "review" | "error" | "disabled" | string;
+  screeningEvidence?: string[];
+  screeningCheckedAt?: string;
+  screeningReviewedAt?: string;
+  screeningReviewedBy?: string;
 }
 
 export interface CorporateCityMeta {
@@ -231,6 +236,15 @@ export interface CorporateRobotAgents {
   publish: CorporateRobotAgent[];
 }
 
+export interface CorporateRobotScreeningStats {
+  clear: number;
+  review: number;
+  error: number;
+  disabled: number;
+  pendingReview: number;
+  total: number;
+}
+
 export interface CorporateRobotStatus {
   enabled: boolean;
   autoPublish: boolean;
@@ -242,6 +256,8 @@ export interface CorporateRobotStatus {
   whatsappOutbox?: CorporateWhatsAppOutbox | null;
   exaConfigured: boolean;
   openosintConfigured: boolean;
+  opensanctionsConfigured: boolean;
+  screeningStats?: CorporateRobotScreeningStats;
   agents: CorporateRobotAgents;
   cronConfigured: boolean;
   lastRunAt: string;
@@ -385,10 +401,24 @@ export function isLeadComplete(lead: CorporateLead): boolean {
   );
 }
 
+/** Hasil OpenSanctions berisiko tinggi harus dikonfirmasi manusia. */
+export function screeningReviewRequired(lead: {
+  screeningStatus?: string;
+  screeningReviewedAt?: string;
+}): boolean {
+  return (
+    String(lead.screeningStatus || "").trim().toLowerCase() === "review" &&
+    !String(lead.screeningReviewedAt || "").trim()
+  );
+}
+
 /** Lead yang sudah memenuhi syarat Telegram boleh disinkronkan ke Prospek. */
 export function isLeadPublishable(lead: CorporateLead): boolean {
   return Boolean(
-    lead.name?.trim() && lead.contactName?.trim() && lead.phone?.trim(),
+    lead.name?.trim() &&
+      lead.contactName?.trim() &&
+      lead.phone?.trim() &&
+      !screeningReviewRequired(lead),
   );
 }
 
@@ -403,6 +433,7 @@ export function companyFieldsFromLead(
   const longitude = Number(lead.longitude);
   const hasCoordinate =
     Number.isFinite(latitude) && latitude !== 0 && Number.isFinite(longitude) && longitude !== 0;
+  // Jangan biarkan data lead lama mengembalikan titik yang sudah diverifikasi.
   const preserveCoordinate = Boolean(
     existing && coordinateReviewStatus(existing) === "verified",
   );

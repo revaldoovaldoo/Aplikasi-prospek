@@ -27,6 +27,7 @@ import {
   markCronTick,
   maybeRunCorporateRobot,
   retryStuckTelegram,
+  reviewCorporateScreening,
   runCorporateRobot,
   sendTestTelegram,
   updateRobotSettings,
@@ -533,6 +534,49 @@ async function handleCorporateRobotStatus(request, env, auth) {
   }
 }
 
+async function handleCorporateRobotScreeningReview(request, env, auth) {
+  if (request.method !== "POST") {
+    return new Response(null, {
+      status: 405,
+      headers: { Allow: "POST", "Cache-Control": "private, no-store" },
+    });
+  }
+  if (!isSameOriginRequest(request, env.APP_ORIGIN)) {
+    return json({ error: "Forbidden" }, 403);
+  }
+  if (!env.DB) return json({ error: "Database belum tersedia" }, 500);
+  const user = await auth.getUser(request);
+  if (!user) return json({ error: "Sign in required" }, 401);
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: "Body bukan JSON yang valid" }, 400);
+  }
+  const leadId = typeof body?.leadId === "string" ? body.leadId.trim() : "";
+  if (!leadId || leadId.length > 160) {
+    return json({ error: "Lead belum dipilih" }, 400);
+  }
+  if (typeof body?.reviewed !== "boolean") {
+    return json({ error: "Status review tidak valid" }, 400);
+  }
+  try {
+    const result = await reviewCorporateScreening(
+      env.DB,
+      user.sub,
+      leadId,
+      body.reviewed,
+    );
+    return json(result, result.ok ? 200 : 400);
+  } catch (error) {
+    console.error(
+      "corporate_robot_screening_review_error",
+      error instanceof Error ? error.message : "unknown error",
+    );
+    return json({ error: "Review OpenSanctions belum bisa disimpan." }, 502);
+  }
+}
+
 async function handleCorporateRobotSettings(request, env, auth) {
   if (request.method !== "POST") {
     return new Response(null, {
@@ -986,6 +1030,9 @@ function setup(env) {
       }
       if (url.pathname === "/api/corporate/robot/settings") {
         return handleCorporateRobotSettings(request, environment, auth);
+      }
+      if (url.pathname === "/api/corporate/robot/screening/review") {
+        return handleCorporateRobotScreeningReview(request, environment, auth);
       }
       if (url.pathname === "/api/corporate/robot/run") {
         return handleCorporateRobotRun(request, environment, auth);

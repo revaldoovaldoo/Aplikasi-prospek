@@ -93,6 +93,13 @@ test("status titik mengikuti sumber koordinat", () => {
     }),
     "missing",
   );
+  assert.equal(
+    workerCoordinateReviewStatus({
+      ...base,
+      coordinateSource: "Panel AI (verifier, nama cocok)",
+    }),
+    "review",
+  );
 });
 
 test("pusat way/relation OSM diterima sebagai koordinat entity", () => {

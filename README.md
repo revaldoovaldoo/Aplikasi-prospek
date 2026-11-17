@@ -142,6 +142,17 @@ dalam file proyek:
 
 - `EXA_API_KEY` — mengaktifkan pencarian LinkedIn/direktori publik. Buat key di
   `https://dashboard.exa.ai/api-keys`, lalu simpan nilainya sebagai secret ini.
+- `OPENSANCTIONS_API_KEY` — mengaktifkan agen Klarifikasi **OpenSanctions** untuk
+  screening nama perusahaan/PIC terhadap sanksi, debarment, dan PEP. Buat key di
+  `https://www.opensanctions.org/account/`. Untuk yente self-host, isi
+  `OPENSANCTIONS_API_URL` (misalnya `https://yente.internal`) dan key boleh
+  dikosongkan bila server tidak meminta autentikasi. Opsional:
+  `OPENSANCTIONS_DATASET` (default `default`) dan `OPENSANCTIONS_THRESHOLD`
+  (default `0.8`). Sumber datanya adalah
+  `https://github.com/opensanctions/opensanctions`; API `/match` hanya menyaring
+  risiko, bukan membuktikan kepemilikan nomor telepon atau alamat e-mail PIC.
+  Data OpenSanctions berlisensi CC BY-NC 4.0; untuk pemakaian komersial pastikan
+  lisensi/akun yang sesuai dengan ketentuan penyedia.
 - `TELEGRAM_BOT_TOKEN` — token bot dari BotFather.
 - `TELEGRAM_CHAT_ID` — chat ID tujuan. Nomor telepon saja bukan chat ID. Buat
   bot lewat **@BotFather**, simpan tokennya sebagai `TELEGRAM_BOT_TOKEN`, buka

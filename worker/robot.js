@@ -23,9 +23,11 @@ import {
   rowToLead,
   isPicRole,
   sanitizePicName,
+  screeningReviewRequired,
 } from "./corporate.js";
 import { researchCorporateLead } from "./research.js";
 import { openosintConfigured } from "./openosint.js";
+import { opensanctionsConfigured } from "./opensanctions.js";
 import { formatPicPhones, validPicPhone } from "./phone.js";
 import {
   sendWhatsAppTemplate,
@@ -38,9 +40,10 @@ const DEFAULT_TELEGRAM_PHONE = "+6285156590261";
 const MAX_APP_STATE_CHARS = 1_500_000;
 
 /**
- * Struktur 10 agen: 3 Finding, 4 Klarifikasi (3 Exa + OpenOSINT native), dan
- * 3 Publish dengan pekerjaan terpisah (Telegram, WhatsApp, dan Prospek).
- * OpenOSINT berjalan langsung di Worker melalui DNS-over-HTTPS dan RDAP.
+ * Struktur 11 agen: 3 Finding, 5 Klarifikasi (3 Exa + OpenOSINT native +
+ * OpenSanctions), dan 3 Publish dengan pekerjaan terpisah (Telegram, WhatsApp,
+ * dan Prospek). OpenOSINT berjalan langsung di Worker melalui DNS-over-HTTPS
+ * dan RDAP; OpenSanctions memakai API /match bila kredensial tersedia.
  */
 const AGENT_BLUEPRINT = {
   finding: [
@@ -87,6 +90,12 @@ const AGENT_BLUEPRINT = {
       name: "OpenOSINT",
       role: "Memeriksa DNS dan registrasi domain secara pasif setelah klarifikasi menerima domain resmi.",
       provider: "OpenOSINT native (DNS/RDAP)",
+    },
+    {
+      id: "clarification-opensanctions",
+      name: "OpenSanctions",
+      role: "Menyaring nama perusahaan dan nama PIC terhadap daftar sanksi, debarment, dan PEP sebagai bukti review; bukan verifikasi nomor/e-mail.",
+      provider: "OpenSanctions /match",
     },
   ],
   publish: [
@@ -139,6 +148,14 @@ function agentStructure(env = {}, telegramConfigured = false) {
     clarification: AGENT_BLUEPRINT.clarification.map((agent) => {
       if (agent.id === "clarification-openosint") {
         return { ...agent, active: true };
+      }
+      if (agent.id === "clarification-opensanctions") {
+        const active = opensanctionsConfigured(env);
+        return {
+          ...agent,
+          active,
+          provider: active ? agent.provider : "OpenSanctions (belum aktif)",
+        };
       }
       return {
         ...agent,
@@ -340,7 +357,9 @@ const JOB_SELECT = `
     l.updated_at AS lead_updated_at,
     l.contact_name, l.contact_role, l.contact_url, l.contact_source,
     l.latitude, l.longitude, l.coordinate_address, l.coordinate_source,
-    l.validation_status, l.validation_evidence, l.validated_at, l.ai_confidence
+    l.validation_status, l.validation_evidence, l.validated_at, l.ai_confidence,
+    l.screening_status, l.screening_evidence, l.screening_checked_at,
+    l.screening_reviewed_at, l.screening_reviewed_by
   FROM corporate_robot_jobs j
   JOIN corporate_leads l ON l.id = j.lead_id
 `;
@@ -1244,7 +1263,7 @@ async function flushTelegramOutbox(db, env, settings, limit = 2, onlyId = "") {
   return { checked: (rows.results ?? []).length, sent, items };
 }
 
-function telegramLeadReady(lead) {
+function contactReadyForPublish(lead) {
   // Telegram hanya boleh membawa titik entitas yang sudah jelas sumbernya.
   // Pusat wilayah dan hasil geocoding jalan tidak cukup untuk publikasi.
   return Boolean(
@@ -1255,9 +1274,15 @@ function telegramLeadReady(lead) {
   );
 }
 
+function telegramLeadReady(lead) {
+  // Publish tidak boleh jalan selama hasil OpenSanctions berisiko tinggi
+  // belum dikonfirmasi manusia di Robot AI.
+  return contactReadyForPublish(lead) && !screeningReviewRequired(lead);
+}
+
 function prospectLeadReady(lead) {
   // Penulis Prospek menerima lead yang sama dengan Kurir Telegram. E-mail dan
-  // website boleh kosong, tetapi koordinat harus lolos gate yang sama.
+  // website boleh kosong, tetapi koordinat dan review screening harus lolos.
   return telegramLeadReady(lead);
 }
 
@@ -1763,7 +1788,8 @@ export async function publishLeadToProspect(db, ownerId, lead) {
     data.locations?.[0] ||
     "Jakarta";
   // Koreksi manusia atau pusat elemen OSM yang sudah tersimpan tidak boleh
-  // ditimpa koordinat lama dari lead robot.
+  // ditimpa koordinat lama dari lead robot. Lazuardi sempat kembali ke titik
+  // jalan karena publish ulang membawa koordinat Panel AI yang lama.
   const lockPriorCoordinate = Boolean(
     existing &&
       coordinateReadyForPublish(prior) &&
@@ -2030,6 +2056,31 @@ async function advanceJob(db, row, env, settings, ownerId) {
         : [];
       attempts += 1;
 
+      // Lead dengan hasil OpenSanctions berisiko tinggi ditahan di review
+      // manusia. Robot tetap memproses lead lain; lead ini baru dilanjutkan
+      // setelah tombol konfirmasi ditekan di Robot AI.
+      if (screeningReviewRequired(lead)) {
+        stage = "paused";
+        await updateJob(db, lead.id, {
+          stage,
+          status: "screening_review",
+          contact_status: contactStatus,
+          contact_confidence: contactConfidence,
+          contact_evidence: JSON.stringify(contactEvidence),
+          attempts,
+          last_error:
+            "OpenSanctions menemukan kandidat berisiko. Konfirmasi manual di Robot AI diperlukan sebelum Publish.",
+          next_run_at: addDays(1),
+        });
+        return {
+          found: false,
+          published: 0,
+          prospectAdded: 0,
+          notified,
+          job: await readJob(db, lead.id),
+        };
+      }
+
       // Klarifikasi selesai bila sudah ada nama PIC + nomor valid. Stage
       // berikutnya hanya mengirim Telegram; stage ini tidak menulis Prospek.
       if (telegramLeadReady(lead)) {
@@ -2077,6 +2128,26 @@ async function advanceJob(db, row, env, settings, ownerId) {
     }
 
     if (stage === "publish_telegram") {
+      if (screeningReviewRequired(lead)) {
+        await updateJob(db, lead.id, {
+          stage: "paused",
+          status: "screening_review",
+          contact_status: contactStatus,
+          contact_confidence: contactConfidence,
+          contact_evidence: JSON.stringify(contactEvidence),
+          attempts,
+          last_error:
+            "OpenSanctions menemukan kandidat berisiko. Konfirmasi manual di Robot AI diperlukan sebelum Publish.",
+          next_run_at: addDays(1),
+        });
+        return {
+          found: false,
+          published: 0,
+          prospectAdded: 0,
+          notified,
+          job: await readJob(db, lead.id),
+        };
+      }
       // Agen Publish 1 — hanya mengirim Telegram. Tidak menulis Prospek.
       const telegram = await sendPublishTelegram(db, row, env, settings, lead);
       if (telegram.ok) {
@@ -2123,6 +2194,26 @@ async function advanceJob(db, row, env, settings, ownerId) {
     }
 
     if (stage === "publish_prospect") {
+      if (screeningReviewRequired(lead)) {
+        await updateJob(db, lead.id, {
+          stage: "paused",
+          status: "screening_review",
+          contact_status: contactStatus,
+          contact_confidence: contactConfidence,
+          contact_evidence: JSON.stringify(contactEvidence),
+          attempts,
+          last_error:
+            "OpenSanctions menemukan kandidat berisiko. Konfirmasi manual di Robot AI diperlukan sebelum Publish.",
+          next_run_at: addDays(1),
+        });
+        return {
+          found: false,
+          published: 0,
+          prospectAdded: 0,
+          notified,
+          job: await readJob(db, lead.id),
+        };
+      }
       // Agen Publish 2 — hanya menulis Prospek. Tidak mengirim Telegram.
       if (!prospectLeadReady(lead)) {
         const exhausted = attempts >= 3;
@@ -2327,6 +2418,112 @@ export async function getCronHealth(db) {
   };
 }
 
+async function readScreeningStats(db) {
+  const row = await db
+    .prepare(
+      `SELECT
+         SUM(CASE WHEN screening_status = 'clear' THEN 1 ELSE 0 END) AS clear_total,
+         SUM(CASE WHEN screening_status = 'review' THEN 1 ELSE 0 END) AS review_total,
+         SUM(CASE WHEN screening_status = 'error' THEN 1 ELSE 0 END) AS error_total,
+         SUM(CASE WHEN screening_status = 'disabled' THEN 1 ELSE 0 END) AS disabled_total,
+         SUM(CASE WHEN screening_status = 'review' AND screening_reviewed_at = '' THEN 1 ELSE 0 END) AS pending_review,
+         COUNT(*) AS total
+       FROM corporate_leads`,
+    )
+    .first()
+    .catch(() => null);
+  return {
+    clear: Number(row?.clear_total || 0),
+    review: Number(row?.review_total || 0),
+    error: Number(row?.error_total || 0),
+    disabled: Number(row?.disabled_total || 0),
+    pendingReview: Number(row?.pending_review || 0),
+    total: Number(row?.total || 0),
+  };
+}
+
+/**
+ * Konfirmasi atau buka kembali flag review OpenSanctions. Konfirmasi tidak
+ * mengubah hasil screening; ia hanya mencatat bahwa manusia sudah meninjau
+ * bukti dan mengizinkan lead melanjutkan Publish.
+ */
+export async function reviewCorporateScreening(
+  db,
+  ownerId,
+  leadId,
+  reviewed,
+) {
+  await ensureCorporateSchema(db);
+  await ensureRobotSchema(db);
+  const row = await db
+    .prepare(
+      "SELECT id, screening_status FROM corporate_leads WHERE id = ?",
+    )
+    .bind(leadId)
+    .first();
+  if (!row) return { ok: false, message: "Lead tidak ditemukan." };
+  if (row.screening_status !== "review") {
+    return {
+      ok: false,
+      message: "Lead ini tidak sedang menunggu review OpenSanctions.",
+    };
+  }
+  const now = nowIso();
+  if (reviewed) {
+    await db
+      .prepare(
+        `UPDATE corporate_leads
+         SET screening_reviewed_at = ?, screening_reviewed_by = ?, updated_at = ?
+         WHERE id = ?`,
+      )
+      .bind(now, clean(ownerId), now, leadId)
+      .run();
+    await db
+      .prepare(
+        `UPDATE corporate_robot_jobs
+         SET stage = 'clarification', status = 'needs_validation', attempts = 0,
+             last_error = '', next_run_at = ?, updated_at = ?
+         WHERE lead_id = ?`,
+      )
+      .bind(now, now, leadId)
+      .run();
+    return {
+      ok: true,
+      reviewed: true,
+      reviewedAt: now,
+      message: "Review OpenSanctions dikonfirmasi. Lead dilanjutkan ke Publish.",
+    };
+  }
+  await db
+    .prepare(
+      `UPDATE corporate_leads
+       SET screening_reviewed_at = '', screening_reviewed_by = '', updated_at = ?
+       WHERE id = ?`,
+    )
+    .bind(now, leadId)
+    .run();
+  await db
+    .prepare(
+      `UPDATE corporate_robot_jobs
+       SET stage = 'paused', status = 'screening_review',
+           last_error = ?, next_run_at = ?, updated_at = ?
+       WHERE lead_id = ?`,
+    )
+    .bind(
+      "Review OpenSanctions dibuka kembali. Konfirmasi manual diperlukan sebelum Publish.",
+      addDays(1),
+      now,
+      leadId,
+    )
+    .run();
+  return {
+    ok: true,
+    reviewed: false,
+    reviewedAt: "",
+    message: "Flag review OpenSanctions dipasang kembali.",
+  };
+}
+
 export async function getRobotStatus(db, env = {}, ownerId = "") {
   await ensureCorporateSchema(db);
   await ensureRobotSchema(db);
@@ -2343,6 +2540,7 @@ export async function getRobotStatus(db, env = {}, ownerId = "") {
   const outbox = await readTelegramOutboxHealth(db);
   const whatsappOutbox = await readWhatsAppOutboxHealth(db).catch(() => null);
   const stats = await readStats(db);
+  const screeningStats = await readScreeningStats(db);
   let prospectSync = null;
   try {
     prospectSync = await auditTelegramProspects(db, ownerId || settings?.owner_id || "");
@@ -2421,14 +2619,23 @@ export async function getRobotStatus(db, env = {}, ownerId = "") {
       `${outbox.failed} pesan gagal, ${outbox.uncertain} tidak pasti, dan ${outbox.needsReview} perlu dicek. Pesan gagal dicoba ulang otomatis; pesan yang macet dapat dikirim ulang dari panel robot.`,
     );
   }
+  if (!opensanctionsConfigured(env)) {
+    notes.push(
+      "OpenSanctions belum aktif. Tambahkan OPENSANCTIONS_API_KEY di Sites → Secrets; robot tetap berjalan dan tidak memblokir lead sampai secret tersedia.",
+    );
+  } else if (screeningStats.pendingReview > 0) {
+    notes.push(
+      `${screeningStats.pendingReview} lead menunggu konfirmasi review OpenSanctions sebelum Publish. Buka detail lead di Robot AI untuk mengonfirmasi.`,
+    );
+  }
   notes.push(
     "Scheduler 24/7 memakai GitHub Actions OIDC; tidak perlu repository secret tambahan.",
   );
   notes.push(
-    "Struktur 10 agen: 3 Finding (Profil Entitas, Sinyal Publik, Penilai Kebutuhan), 4 Klarifikasi (Scout, Contact Finder, Verifier, OpenOSINT), 3 Publish (Kurir Telegram, Agen WhatsApp, Penulis Prospek).",
+    "Struktur 11 agen: 3 Finding (Profil Entitas, Sinyal Publik, Penilai Kebutuhan), 5 Klarifikasi (Scout, Contact Finder, Verifier, OpenOSINT, OpenSanctions), 3 Publish (Kurir Telegram, Agen WhatsApp, Penulis Prospek).",
   );
   notes.push(
-    "Klarifikasi memakai Exa Answer dan OpenOSINT native untuk DNS/DNS-over-HTTPS dan RDAP domain; Finding memakai website publik gratis dan Exa Search. Tidak ada provider WormGPT/FraudGPT/GhostGPT/HackerGPT/Hexstrike.",
+    "Klarifikasi memakai Exa Answer, OpenOSINT native untuk DNS/DNS-over-HTTPS dan RDAP domain, serta OpenSanctions untuk screening nama perusahaan/PIC terhadap sanksi, debarment, dan PEP; Finding memakai website publik gratis dan Exa Search. Tidak ada provider WormGPT/FraudGPT/GhostGPT/HackerGPT/Hexstrike.",
   );
   notes.push(
     "Publish dipisah menjadi tiga pekerjaan: publish_telegram mengirim pesan, agen WhatsApp masih berupa draft yang belum membalas otomatis, dan publish_prospect menulis daftar Prospek. Telegram dikirim satu kali setelah Klarifikasi menerima lead.",
@@ -2452,6 +2659,8 @@ export async function getRobotStatus(db, env = {}, ownerId = "") {
     whatsappOutbox,
     exaConfigured: Boolean(env.EXA_API_KEY),
     openosintConfigured: openosintConfigured(env),
+    opensanctionsConfigured: opensanctionsConfigured(env),
+    screeningStats,
     agents: agentStructure(env, config.configured),
     cronConfigured: true,
     lastRunAt,

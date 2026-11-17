@@ -1,6 +1,7 @@
 import {
   coordinateReviewStatus,
   isApproximateCoordinate,
+  screeningReviewRequired,
   websiteHost,
   type CorporateLead,
 } from "../lib/corporate";
@@ -21,6 +22,8 @@ interface Props {
   error: string;
   agentEvidence?: string[];
   visitLabel?: string;
+  screeningBusy?: boolean;
+  onScreeningReview?: (reviewed: boolean) => void;
   onClose: () => void;
   onVisit: () => void;
 }
@@ -31,12 +34,16 @@ export default function CorporateLeadDialog({
   error,
   agentEvidence = [],
   visitLabel = "Masuk Prospek",
+  screeningBusy = false,
+  onScreeningReview,
   onClose,
   onVisit,
 }: Props) {
   const hasContact = Boolean(lead?.email || lead?.phone || lead?.contactName);
   const approximateCoordinate = Boolean(lead && isApproximateCoordinate(lead));
   const coordinateStatus = lead ? coordinateReviewStatus(lead) : "missing";
+  const screeningPending = Boolean(lead && screeningReviewRequired(lead));
+  const screeningReviewed = Boolean(lead?.screeningReviewedAt);
 
   return (
     <Modal
@@ -55,16 +62,18 @@ export default function CorporateLeadDialog({
               type="button"
               className="btn btn-primary"
               onClick={onVisit}
-              disabled={approximateCoordinate}
+              disabled={approximateCoordinate || screeningPending}
               style={
-                approximateCoordinate
+                approximateCoordinate || screeningPending
                   ? { opacity: 0.55, cursor: "not-allowed" }
                   : undefined
               }
               title={
-                approximateCoordinate
-                  ? "Koordinat masih perkiraan wilayah. Lead belum bisa masuk Prospek sampai koordinat entitas tervalidasi."
-                  : "Masukkan perusahaan ini ke Prospek meskipun informasinya belum lengkap"
+                screeningPending
+                  ? "Konfirmasi review OpenSanctions terlebih dahulu sebelum lead masuk Prospek."
+                  : approximateCoordinate
+                    ? "Koordinat masih perkiraan wilayah. Lead belum bisa masuk Prospek sampai koordinat entitas tervalidasi."
+                    : "Masukkan perusahaan ini ke Prospek meskipun informasinya belum lengkap"
               }
             >
               <CheckIcon size={15} /> {visitLabel}
@@ -184,6 +193,60 @@ export default function CorporateLeadDialog({
                   <li key={`${index}-${item.slice(0, 24)}`}>{item}</li>
                 ))}
               </ul>
+            </div>
+          ) : null}
+
+          {lead.validationEvidence?.length ? (
+            <div className="lead-agent-trace">
+              <strong>Jejak agen Klarifikasi</strong>
+              <ul>
+                {lead.validationEvidence.map((item, index) => (
+                  <li key={`${index}-${item.slice(0, 24)}`}>{item}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
+          {lead.screeningStatus === "review" ? (
+            <div
+              className={`lead-screening-review ${
+                screeningPending ? "pending" : "resolved"
+              }`}
+            >
+              <div className="lead-screening-head">
+                <strong>OpenSanctions · Review</strong>
+                <span>{screeningReviewed ? "Sudah dikonfirmasi" : "Perlu konfirmasi"}</span>
+              </div>
+              <p>
+                {screeningPending
+                  ? "Lead ditahan dari Publish dan Prospek sampai hasil screening berisiko ini dikonfirmasi."
+                  : `Review sudah dikonfirmasi${
+                      lead.screeningReviewedAt
+                        ? ` pada ${new Date(lead.screeningReviewedAt).toLocaleString("id-ID")}`
+                        : ""
+                    }.`}
+              </p>
+              {lead.screeningEvidence?.length ? (
+                <ul>
+                  {lead.screeningEvidence.slice(0, 5).map((item, index) => (
+                    <li key={`${index}-${item.slice(0, 24)}`}>{item}</li>
+                  ))}
+                </ul>
+              ) : null}
+              {onScreeningReview ? (
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-small"
+                  disabled={screeningBusy}
+                  onClick={() => onScreeningReview(screeningPending)}
+                >
+                  {screeningBusy
+                    ? "Menyimpan…"
+                    : screeningPending
+                      ? "Konfirmasi & hapus flag review"
+                      : "Buka kembali flag review"}
+                </button>
+              ) : null}
             </div>
           ) : null}
 

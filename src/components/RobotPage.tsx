@@ -3,6 +3,7 @@ import type { Company } from "../types";
 import {
   categoryLabel,
   findCompanyForLead,
+  screeningReviewRequired,
   type CorporateLead,
   type CorporateRobotJob,
   type CorporateRobotStatus,
@@ -11,6 +12,7 @@ import {
   detectCorporateRobotTelegram,
   fetchCorporateRobot,
   retryCorporateRobotTelegram,
+  reviewCorporateScreening,
   saveCorporateRobotSettings,
   searchCorporateLead,
   testCorporateRobotTelegram,
@@ -41,10 +43,28 @@ function robotStageLabel(stage: string): string {
 }
 
 function robotContactLabel(job: CorporateRobotJob): string {
+  if (job.status === "screening_review") return "Review OpenSanctions";
   if (job.contactStatus === "verified") return "Terverifikasi publik";
   if (job.contactStatus === "partial") return "Perlu dicek";
   if (job.contactStatus === "missing") return "Belum ada kontak";
   return robotStageLabel(job.stage);
+}
+
+function screeningBadge(
+  lead: CorporateLead,
+  configured: boolean,
+): { label: string; tone: string } {
+  if (!configured) return { label: "OpenSanctions belum aktif", tone: "disabled" };
+  if (screeningReviewRequired(lead)) return { label: "OpenSanctions review", tone: "review" };
+  if (lead.screeningStatus === "review" && lead.screeningReviewedAt) {
+    return { label: "Review dikonfirmasi", tone: "reviewed" };
+  }
+  if (lead.screeningStatus === "clear") return { label: "OpenSanctions clear", tone: "clear" };
+  if (lead.screeningStatus === "error") return { label: "OpenSanctions error", tone: "error" };
+  if (lead.screeningStatus === "disabled") {
+    return { label: "OpenSanctions belum aktif", tone: "disabled" };
+  }
+  return { label: "Screening belum diperiksa", tone: "pending" };
 }
 
 function errorMessage(error: unknown): string {
@@ -54,11 +74,14 @@ function errorMessage(error: unknown): string {
 function RobotJobRow({
   job,
   onOpenLead,
+  opensanctionsConfigured,
 }: {
   job: CorporateRobotJob;
   onOpenLead: (lead: CorporateLead, evidence?: string[]) => void;
+  opensanctionsConfigured: boolean;
 }) {
   const lead = job.lead;
+  const screening = screeningBadge(lead, opensanctionsConfigured);
   return (
     <button
       type="button"
@@ -85,6 +108,9 @@ function RobotJobRow({
       </span>
       <span className={`robot-pill ${job.contactStatus}`}>
         {robotContactLabel(job)}
+      </span>
+      <span className={`robot-screening ${screening.tone}`}>
+        {screening.label}
       </span>
     </button>
   );
@@ -321,6 +347,16 @@ function RobotPanel({
           <SearchIcon size={13} /> OpenOSINT{" "}
           {status?.openosintConfigured ? "aktif" : "belum aktif"}
         </span>
+        <span
+          className={`robot-chip ${
+            status?.opensanctionsConfigured ? "ok" : "warn"
+          }`}
+        >
+          <SearchIcon size={13} /> OpenSanctions{" "}
+          {status?.opensanctionsConfigured
+            ? `aktif · ${status.screeningStats?.pendingReview ?? 0} review`
+            : "belum aktif"}
+        </span>
         <span className={`robot-chip ${status?.telegramConfigured ? "ok" : "warn"}`}>
           <SparkIcon size={13} /> Telegram{" "}
           {status?.telegramConfigured ? "aktif" : "belum aktif"}
@@ -335,6 +371,13 @@ function RobotPanel({
         <span className={`robot-chip ${status?.cronConfigured ? "ok" : "warn"}`}>
           Scheduler {status?.cronConfigured ? "siap" : "belum aktif"}
         </span>
+        {status?.opensanctionsConfigured && status.screeningStats ? (
+          <span className="robot-screening-summary">
+            Screening: clear {status.screeningStats.clear} · review{" "}
+            {status.screeningStats.review} · error {status.screeningStats.error} ·
+            belum aktif {status.screeningStats.disabled}
+          </span>
+        ) : null}
         <span className="robot-chip">
           Terakhir: {loading ? "memuat…" : robotTime(status?.lastRunAt)}
         </span>
@@ -503,6 +546,7 @@ function RobotPanel({
                     <RobotJobRow
                       key={job.lead.id}
                       job={job}
+                      opensanctionsConfigured={Boolean(status?.opensanctionsConfigured)}
                       onOpenLead={onOpenLead}
                     />
                   ))}
@@ -514,9 +558,10 @@ function RobotPanel({
       )}
 
       <p className="robot-note">
-        Struktur 10 agen: 3 Finding memakai website publik gratis dan Exa Search;
-        4 Klarifikasi memakai Exa Scout, Contact Finder, Verifier, serta OpenOSINT pasif
-        untuk DNS/RDAP domain; 3 Publish bekerja terpisah — Kurir Telegram mengirim pesan,
+        Struktur 11 agen: 3 Finding memakai website publik gratis dan Exa Search;
+        5 Klarifikasi memakai Exa Scout, Contact Finder, Verifier, OpenOSINT pasif
+        untuk DNS/RDAP domain, serta OpenSanctions untuk screening sanksi/PEP nama
+        perusahaan/PIC; 3 Publish bekerja terpisah — Kurir Telegram mengirim pesan,
         Agen WhatsApp menghubungi PIC, Penulis Prospek menulis daftar Prospek. Telegram hanya mewajibkan nama PIC dan
         minimal satu nomor PIC valid; hingga dua nomor (kontak perusahaan dan nomor PIC)
         ditampilkan pada baris Nomor PIC. E-mail atau website yang kosong memakai
@@ -555,6 +600,7 @@ export default function RobotPage({
   const [selectedEvidence, setSelectedEvidence] = useState<string[]>([]);
   const [leadSearching, setLeadSearching] = useState(false);
   const [leadError, setLeadError] = useState("");
+  const [screeningBusy, setScreeningBusy] = useState(false);
 
   async function loadRobot() {
     try {
@@ -641,6 +687,29 @@ export default function RobotPage({
       setError(errorMessage(telegramError));
     } finally {
       setBusy("");
+    }
+  }
+
+  async function reviewSelectedScreening(reviewed: boolean) {
+    if (!selected) return;
+    setScreeningBusy(true);
+    setLeadError("");
+    try {
+      const result = await reviewCorporateScreening(selected.id, reviewed);
+      setNotice(result.message);
+      setSelected((previous) =>
+        previous
+          ? {
+              ...previous,
+              screeningReviewedAt: result.reviewedAt || "",
+            }
+          : previous,
+      );
+      await loadRobot();
+    } catch (reviewError) {
+      setLeadError(errorMessage(reviewError));
+    } finally {
+      setScreeningBusy(false);
     }
   }
 
@@ -754,6 +823,8 @@ export default function RobotPage({
         error={leadError}
         agentEvidence={selectedEvidence}
         visitLabel="Masuk Prospek"
+        screeningBusy={screeningBusy}
+        onScreeningReview={reviewSelectedScreening}
         onClose={() => {
           setSelected(null);
           setSelectedEvidence([]);

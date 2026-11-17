@@ -1,11 +1,12 @@
 /**
  * Panel riset dan validasi lead Corporate Engine.
  *
- * Empat agen Klarifikasi berjalan bersamaan:
+ * Lima agen Klarifikasi:
  * 1. Scout          — profil, website resmi, alamat, koordinat (Exa Answer).
  * 2. Contact Finder — PIC, jabatan, e-mail, nomor telepon (Exa Answer).
  * 3. Verifier       — memeriksa ulang temuan secara independen (Exa Answer).
  * 4. OpenOSINT      — DNS/RDAP pasif dari domain resmi (self-host opsional).
+ * 5. OpenSanctions  — screening nama perusahaan/PIC terhadap sanksi/PEP.
  *
  * Hasil AI tidak langsung dipercaya. Worker memeriksa ulang website yang bisa
  * dibuka, kecocokan nama, domain/MX e-mail, nomor telepon, dan koordinat.
@@ -28,6 +29,7 @@ import {
   sanitizePicName,
 } from "./corporate.js";
 import { collectOpenOsintEvidence } from "./openosint.js";
+import { screenLeadOpenSanctions } from "./opensanctions.js";
 import {
   formatPicPhones,
   selectPicPhones,
@@ -679,7 +681,7 @@ export async function researchCorporateLead(db, leadId, env = {}) {
   await ensureCorporateSchema(db);
   const row = await db
     .prepare(
-      "SELECT id, name, city, area, category, email, phone, website, contact_name, contact_role, contact_url, contact_source, latitude, longitude, coordinate_address, coordinate_source, validation_status, validation_evidence, validated_at, ai_confidence FROM corporate_leads WHERE id = ?",
+      "SELECT id, name, city, area, category, email, phone, website, contact_name, contact_role, contact_url, contact_source, latitude, longitude, coordinate_address, coordinate_source, validation_status, validation_evidence, validated_at, ai_confidence, screening_status, screening_evidence, screening_checked_at, screening_reviewed_at, screening_reviewed_by FROM corporate_leads WHERE id = ?",
     )
     .bind(leadId)
     .first();
@@ -760,6 +762,14 @@ export async function researchCorporateLead(db, leadId, env = {}) {
   const phone = formatPicPhones(phoneCandidate, 2) || phoneCandidate;
   const personName = sanitizePicName(
     verifier.personName || contact.personName || lead.contactName,
+  );
+  // Agen Klarifikasi kelima: screening sanksi/PEP untuk nama perusahaan dan
+  // nama PIC. Ini bukan verifikasi kepemilikan nomor/e-mail; hasilnya menjadi
+  // bukti tambahan yang harus dibaca bersama bukti kontak lain.
+  const screening = await screenLeadOpenSanctions(
+    db,
+    { ...lead, name: lead.name, contactName: personName },
+    env,
   );
   const role = clean(verifier.role || contact.role || lead.contactRole);
   const address = clean(
@@ -888,6 +898,9 @@ export async function researchCorporateLead(db, leadId, env = {}) {
     verifier.locationVerified === true &&
     coordinateCandidateMatchesName(lead.name, verifier.address)
   ) {
+    // Koordinat dari panel verifier tetap berstatus review. Jangan memakai
+    // label Nominatim/OpenStreetMap karena itu akan melewati gate tanpa
+    // geocoding yang benar-benar mencocokkan entitas.
     coordinate = {
       lat: Number(verifier.latitude),
       lon: Number(verifier.longitude),
@@ -993,6 +1006,9 @@ export async function researchCorporateLead(db, leadId, env = {}) {
   } else if (openosint.configured && openosint.error) {
     evidence.push(`OpenOSINT: ${openosint.error}`);
   }
+  if (screening.evidence.length > 0) {
+    evidence.push(...screening.evidence.slice(0, 3));
+  }
 
   const now = new Date().toISOString();
   const region = regionCoordinate(lead.city, lead.area);
@@ -1015,6 +1031,13 @@ export async function researchCorporateLead(db, leadId, env = {}) {
     validationEvidence: evidence.slice(0, 12),
     validatedAt: now,
     aiConfidence,
+    screeningStatus: screening.status || "disabled",
+    screeningEvidence: (screening.evidence || []).slice(0, 12),
+    screeningCheckedAt: screening.checkedAt || now,
+    // Setiap screening baru membatalkan konfirmasi lama. Hasil review harus
+    // dilihat ulang bila datanya berubah.
+    screeningReviewedAt: "",
+    screeningReviewedBy: "",
   };
 
   await db
@@ -1023,7 +1046,9 @@ export async function researchCorporateLead(db, leadId, env = {}) {
        SET website = ?, email = ?, phone = ?, contact_name = ?, contact_role = ?,
            contact_url = ?, contact_source = ?, latitude = ?, longitude = ?,
            coordinate_address = ?, coordinate_source = ?, validation_status = ?,
-           validation_evidence = ?, validated_at = ?, ai_confidence = ?, updated_at = ?
+           validation_evidence = ?, validated_at = ?, ai_confidence = ?,
+           screening_status = ?, screening_evidence = ?, screening_checked_at = ?,
+           screening_reviewed_at = ?, screening_reviewed_by = ?, updated_at = ?
        WHERE id = ?`,
     )
     .bind(
@@ -1042,6 +1067,11 @@ export async function researchCorporateLead(db, leadId, env = {}) {
       JSON.stringify(nextLead.validationEvidence),
       nextLead.validatedAt,
       nextLead.aiConfidence,
+      nextLead.screeningStatus,
+      JSON.stringify(nextLead.screeningEvidence),
+      nextLead.screeningCheckedAt,
+      nextLead.screeningReviewedAt,
+      nextLead.screeningReviewedBy,
       now,
       lead.id,
     )
@@ -1079,6 +1109,14 @@ export async function researchCorporateLead(db, leadId, env = {}) {
         evidence: openosint.evidence || [],
         error: openosint.error || "",
         tools: openosint.tools || [],
+      },
+      screening: {
+        configured: Boolean(screening.configured),
+        status: screening.status || "disabled",
+        matches: screening.matches || [],
+        evidence: screening.evidence || [],
+        error: screening.error || "",
+        checkedAt: screening.checkedAt || "",
       },
     },
   };

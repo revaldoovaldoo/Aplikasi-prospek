@@ -768,7 +768,7 @@ export default function App() {
     // Jangan biarkan jalur manual memasukkan lead dengan koordinat perkiraan.
     if (isApproximateCoordinate(lead)) return existing ? existing.id : null;
     if (!manual && !isLeadComplete(lead)) return existing ? existing.id : null;
-    const fields = companyFieldsFromLead(lead);
+    const fields = companyFieldsFromLead(lead, existing ?? undefined);
     if (manual) {
       // Tambahan manual tidak boleh ikut dibersihkan oleh prune robot yang
       // hanya menyimpan lead tervalidasi. Tetap tanpa sourceLeadId agar tidak

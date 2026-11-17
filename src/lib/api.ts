@@ -261,6 +261,37 @@ function robotErrorMessage(body: Record<string, unknown> | null, fallback: strin
   return typeof body?.error === "string" ? body.error : fallback;
 }
 
+export async function reviewCorporateScreening(
+  leadId: string,
+  reviewed: boolean,
+): Promise<{ ok: boolean; reviewed: boolean; reviewedAt?: string; message: string }> {
+  const response = await fetch("/api/corporate/robot/screening/review", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ leadId, reviewed }),
+  });
+  const body = await readJson(response);
+  if (!response.ok) {
+    throw new ApiError(
+      response.status,
+      response.status === 401
+        ? "Sesi berakhir."
+        : robotErrorMessage(body, "Review OpenSanctions belum berhasil."),
+    );
+  }
+  return {
+    ok: Boolean(body?.ok),
+    reviewed: Boolean(body?.reviewed),
+    reviewedAt:
+      typeof body?.reviewedAt === "string" ? body.reviewedAt : undefined,
+    message:
+      typeof body?.message === "string"
+        ? body.message
+        : "Review OpenSanctions diperbarui.",
+  };
+}
+
 export async function fetchCorporateRobot(): Promise<CorporateRobotStatus> {
   const response = await fetch("/api/corporate/robot", {
     credentials: "same-origin",

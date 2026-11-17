@@ -346,6 +346,11 @@ const SCHEMA_SQL = [
     validation_evidence TEXT NOT NULL DEFAULT '[]',
     validated_at TEXT NOT NULL DEFAULT '',
     ai_confidence INTEGER NOT NULL DEFAULT 0,
+    screening_status TEXT NOT NULL DEFAULT '',
+    screening_evidence TEXT NOT NULL DEFAULT '[]',
+    screening_checked_at TEXT NOT NULL DEFAULT '',
+    screening_reviewed_at TEXT NOT NULL DEFAULT '',
+    screening_reviewed_by TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL
   )`,
   `CREATE TABLE IF NOT EXISTS corporate_city_refresh (
@@ -395,6 +400,11 @@ export async function ensureCorporateSchema(db) {
         "validation_evidence TEXT NOT NULL DEFAULT '[]'",
         "validated_at TEXT NOT NULL DEFAULT ''",
         "ai_confidence INTEGER NOT NULL DEFAULT 0",
+        "screening_status TEXT NOT NULL DEFAULT ''",
+        "screening_evidence TEXT NOT NULL DEFAULT '[]'",
+        "screening_checked_at TEXT NOT NULL DEFAULT ''",
+        "screening_reviewed_at TEXT NOT NULL DEFAULT ''",
+        "screening_reviewed_by TEXT NOT NULL DEFAULT ''",
       ]) {
         try {
           await db.prepare(`ALTER TABLE corporate_leads ADD COLUMN ${column}`).run();
@@ -635,7 +645,20 @@ export function rowToLead(row) {
     validationEvidence: parseJsonList(row.validation_evidence),
     validatedAt: row.validated_at || "",
     aiConfidence: Number(row.ai_confidence) || 0,
+    screeningStatus: row.screening_status || "",
+    screeningEvidence: parseJsonList(row.screening_evidence),
+    screeningCheckedAt: row.screening_checked_at || "",
+    screeningReviewedAt: row.screening_reviewed_at || "",
+    screeningReviewedBy: row.screening_reviewed_by || "",
   };
+}
+
+/** Hasil OpenSanctions berisiko tinggi harus dikonfirmasi manusia. */
+export function screeningReviewRequired(lead = {}) {
+  return (
+    clean(lead.screeningStatus).toLowerCase() === "review" &&
+    !clean(lead.screeningReviewedAt)
+  );
 }
 
 /**
@@ -704,7 +727,7 @@ export async function readCorporateLeads(db, seed) {
 
   const result = await db
     .prepare(
-      "SELECT id, name, city, area, category, email, phone, website, contact_name, contact_role, contact_url, contact_source, latitude, longitude, coordinate_address, coordinate_source, validation_status, validation_evidence, validated_at, ai_confidence FROM corporate_leads",
+      "SELECT id, name, city, area, category, email, phone, website, contact_name, contact_role, contact_url, contact_source, latitude, longitude, coordinate_address, coordinate_source, validation_status, validation_evidence, validated_at, ai_confidence, screening_status, screening_evidence, screening_checked_at, screening_reviewed_at, screening_reviewed_by FROM corporate_leads",
     )
     .all();
   const cacheByCity = new Map();
@@ -746,7 +769,7 @@ export async function readCorporateLeads(db, seed) {
 }
 
 const CORPORATE_LEAD_FIELDS =
-  "id, name, city, area, category, email, phone, website, contact_name, contact_role, contact_url, contact_source, latitude, longitude, coordinate_address, coordinate_source, validation_status, validation_evidence, validated_at, ai_confidence";
+  "id, name, city, area, category, email, phone, website, contact_name, contact_role, contact_url, contact_source, latitude, longitude, coordinate_address, coordinate_source, validation_status, validation_evidence, validated_at, ai_confidence, screening_status, screening_evidence, screening_checked_at, screening_reviewed_at, screening_reviewed_by";
 
 function companyHost(value) {
   try {
@@ -1949,7 +1972,7 @@ export async function enrichCorporateLead(db, id, env = {}) {
   await ensureCorporateSchema(db);
   const row = await db
     .prepare(
-      "SELECT id, name, city, area, category, email, phone, website, contact_name, contact_role, contact_url, contact_source, latitude, longitude, coordinate_address, coordinate_source, validation_status, validation_evidence, validated_at, ai_confidence FROM corporate_leads WHERE id = ?",
+      "SELECT id, name, city, area, category, email, phone, website, contact_name, contact_role, contact_url, contact_source, latitude, longitude, coordinate_address, coordinate_source, validation_status, validation_evidence, validated_at, ai_confidence, screening_status, screening_evidence, screening_checked_at, screening_reviewed_at, screening_reviewed_by FROM corporate_leads WHERE id = ?",
     )
     .bind(id)
     .first();
