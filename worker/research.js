@@ -1012,6 +1012,13 @@ export async function researchCorporateLead(db, leadId, env = {}) {
 
   const now = new Date().toISOString();
   const region = regionCoordinate(lead.city, lead.area);
+  const screeningStatus = screening.status || "disabled";
+  const screeningEvidence = (screening.evidence || []).slice(0, 12);
+  const screeningUnchanged =
+    clean(lead.screeningStatus).toLowerCase() ===
+      screeningStatus.toLowerCase() &&
+    JSON.stringify(lead.screeningEvidence || []) ===
+      JSON.stringify(screeningEvidence);
   const nextLead = {
     ...lead,
     website: website || lead.website,
@@ -1031,13 +1038,17 @@ export async function researchCorporateLead(db, leadId, env = {}) {
     validationEvidence: evidence.slice(0, 12),
     validatedAt: now,
     aiConfidence,
-    screeningStatus: screening.status || "disabled",
-    screeningEvidence: (screening.evidence || []).slice(0, 12),
+    screeningStatus,
+    screeningEvidence,
     screeningCheckedAt: screening.checkedAt || now,
-    // Setiap screening baru membatalkan konfirmasi lama. Hasil review harus
-    // dilihat ulang bila datanya berubah.
-    screeningReviewedAt: "",
-    screeningReviewedBy: "",
+    // Konfirmasi dipertahankan hanya bila hasil screening tidak berubah.
+    // Bila bukti berubah, review lama dibatalkan agar manusia meninjau ulang.
+    screeningReviewedAt: screeningUnchanged
+      ? lead.screeningReviewedAt || ""
+      : "",
+    screeningReviewedBy: screeningUnchanged
+      ? lead.screeningReviewedBy || ""
+      : "",
   };
 
   await db
