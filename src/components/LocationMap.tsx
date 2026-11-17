@@ -5,6 +5,8 @@ interface Props {
   latitude?: number;
   longitude?: number;
   address?: string;
+  city?: string;
+  area?: string;
   source?: string;
 }
 
@@ -16,6 +18,8 @@ export default function LocationMap({
   latitude,
   longitude,
   address,
+  city,
+  area,
   source,
 }: Props) {
   const lat = Number(latitude);
@@ -33,6 +37,8 @@ export default function LocationMap({
   const mapsUrl = googleMapsUrl(lat, lng);
   const label = address?.trim() || `${lat}, ${lng}`;
   const status = coordinateReviewStatus({
+    city,
+    area,
     latitude: lat,
     longitude: lng,
     coordinateSource: source,

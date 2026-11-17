@@ -146,7 +146,7 @@ export default function CompanyDrawer({
     mapLatitude !== 0 &&
     Number.isFinite(mapLongitude) &&
     mapLongitude !== 0;
-  const mapStatus = coordinateReviewStatus(company);
+  const mapStatus = coordinateReviewStatus({ ...company, city: company.location });
   const mapsHref = hasMapCoordinate
     ? googleMapsUrl(mapLatitude, mapLongitude)
     : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
@@ -258,6 +258,7 @@ export default function CompanyDrawer({
             latitude={company.latitude}
             longitude={company.longitude}
             address={company.coordinateAddress}
+            city={company.location}
             source={company.coordinateSource}
           />
 

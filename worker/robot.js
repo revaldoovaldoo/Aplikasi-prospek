@@ -1762,6 +1762,35 @@ export async function publishLeadToProspect(db, ownerId, lead) {
     clean(prior.location) ||
     data.locations?.[0] ||
     "Jakarta";
+  // Koreksi manusia atau pusat elemen OSM yang sudah tersimpan tidak boleh
+  // ditimpa koordinat lama dari lead robot.
+  const lockPriorCoordinate = Boolean(
+    existing &&
+      coordinateReadyForPublish(prior) &&
+      (/^Dikonfirmasi manual\b/i.test(clean(prior.coordinateSource)) ||
+        /^OpenStreetMap (?:node|way|relation)\b/i.test(clean(prior.coordinateSource))),
+  );
+  const coordinateFields = lockPriorCoordinate
+    ? {
+        latitude: Number(prior.latitude),
+        longitude: Number(prior.longitude),
+        coordinateAddress: clean(prior.coordinateAddress),
+        coordinateSource: clean(prior.coordinateSource),
+      }
+    : {
+        latitude:
+          Number.isFinite(latitude) && latitude !== 0
+            ? latitude
+            : Number(prior.latitude || 0),
+        longitude:
+          Number.isFinite(longitude) && longitude !== 0
+            ? longitude
+            : Number(prior.longitude || 0),
+        coordinateAddress:
+          clean(lead.coordinateAddress) || clean(prior.coordinateAddress),
+        coordinateSource:
+          clean(lead.coordinateSource) || clean(prior.coordinateSource),
+      };
   const robotFields = {
     name: clean(lead.name),
     location,
@@ -1771,10 +1800,7 @@ export async function publishLeadToProspect(db, ownerId, lead) {
     contactName: sanitizePicName(lead.contactName),
     contactRole: clean(lead.contactRole) || clean(prior.contactRole),
     contactSource: clean(lead.contactSource) || clean(prior.contactSource),
-    latitude: Number.isFinite(latitude) && latitude !== 0 ? latitude : Number(prior.latitude || 0),
-    longitude: Number.isFinite(longitude) && longitude !== 0 ? longitude : Number(prior.longitude || 0),
-    coordinateAddress: clean(lead.coordinateAddress) || clean(prior.coordinateAddress),
-    coordinateSource: clean(lead.coordinateSource) || clean(prior.coordinateSource),
+    ...coordinateFields,
     validationStatus:
       clean(prior.validationStatus) === "verified"
         ? "verified"

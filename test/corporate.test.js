@@ -5,6 +5,10 @@ import {
   coordinateReadyForPublish,
   isPicRole,
   isRoadCoordinate,
+  normalizeElements,
+  normalizeOsmCoordinateSource,
+  osmElementCenter,
+  resolveLeadCoordinates,
   sanitizePicName,
 } from "../worker/corporate.js";
 
@@ -111,10 +115,100 @@ test("geocoder menolak nama jalan dan hanya menerima entitas yang cocok", () => 
     false,
   );
   assert.equal(
+    coordinateCandidateMatchesName(
+      "Lazuardi Global Islamic School",
+      "Lazuardi Global Islamic Center, Limo, Depok",
+    ),
+    false,
+  );
+  assert.equal(
     isRoadCoordinate({ type: "residential", class: "highway" }),
     true,
   );
   assert.equal(isRoadCoordinate({ type: "school", class: "amenity" }), false);
+});
+
+test("pusat elemen way/relation ditandai sebagai sumber entity OSM", () => {
+  const wayCenter = osmElementCenter(
+    [
+      { type: "way", id: 7, tags: { name: "Sekolah Contoh" } },
+      { type: "node", id: 1, lat: -6.4, lon: 106.8 },
+      { type: "node", id: 2, lat: -6.5, lon: 106.9 },
+    ],
+    "way",
+    "7",
+  );
+  assert.ok(wayCenter);
+  assert.ok(Math.abs(wayCenter.lat - -6.45) < 1e-9);
+  assert.ok(Math.abs(wayCenter.lon - 106.85) < 1e-9);
+  assert.equal(wayCenter.element.tags.name, "Sekolah Contoh");
+  const relationCenter = osmElementCenter(
+    [
+      { type: "relation", id: 9, tags: { name: "Hotel Contoh" } },
+      { type: "node", id: 1, lat: -6.3, lon: 106.7 },
+      { type: "node", id: 2, lat: -6.4, lon: 106.8 },
+    ],
+    "relation",
+    "9",
+  );
+  assert.ok(relationCenter);
+  assert.ok(Math.abs(relationCenter.lat - -6.35) < 1e-9);
+  assert.ok(Math.abs(relationCenter.lon - 106.75) < 1e-9);
+  assert.equal(
+    normalizeOsmCoordinateSource("OpenStreetMap", "osm:way/487275703"),
+    "OpenStreetMap way (pusat elemen)",
+  );
+  assert.equal(
+    normalizeOsmCoordinateSource("OpenStreetMap", "osm:relation/123"),
+    "OpenStreetMap relation (pusat elemen)",
+  );
+  const [hotel] = normalizeElements(
+    [
+      {
+        type: "way",
+        id: 487275703,
+        center: { lat: -6.4, lon: 106.8 },
+        tags: { name: "favehotel Margonda" },
+      },
+    ],
+    "Depok",
+    "hotel",
+    5,
+  );
+  assert.equal(hotel.coordinateSource, "OpenStreetMap way (pusat elemen)");
+  assert.equal(
+    coordinateReadyForPublish({
+      city: "Depok",
+      latitude: hotel.latitude,
+      longitude: hotel.longitude,
+      coordinateSource: hotel.coordinateSource,
+    }),
+    true,
+  );
+});
+
+test("konfirmasi manual di luar bbox tetap dipertahankan", () => {
+  const coordinate = resolveLeadCoordinates({
+    city: "Depok",
+    area: "Limo",
+    latitude: -6.2,
+    longitude: 106.7,
+    coordinateSource: "Dikonfirmasi manual — koreksi lapangan",
+  });
+  assert.equal(coordinate.latitude, -6.2);
+  assert.equal(coordinate.longitude, 106.7);
+  assert.equal(coordinate.coordinateSource, "Dikonfirmasi manual — koreksi lapangan");
+  assert.equal(coordinate.approximate, false);
+  assert.equal(
+    coordinateReadyForPublish({
+      city: "Depok",
+      area: "Limo",
+      latitude: -6.2,
+      longitude: 106.7,
+      coordinateSource: "Dikonfirmasi manual — koreksi lapangan",
+    }),
+    true,
+  );
 });
 
 test("koordinat publikasi harus berasal dari entitas atau koreksi manual", () => {

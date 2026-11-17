@@ -93,7 +93,7 @@ export default function DashboardPage({
   const lostCount = lost.length;
   const lostThisMonth = lost.filter((entry) => entry.lostAt.startsWith(monthKey)).length;
   const coordinatesToReview = companies.filter((company) => {
-    const status = coordinateReviewStatus(company);
+    const status = coordinateReviewStatus({ ...company, city: company.location });
     return (
       status === "review" ||
       (status === "missing" &&

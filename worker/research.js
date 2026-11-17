@@ -21,6 +21,7 @@ import {
   exaAnswer,
   isRegionCoordinateSource,
   isRoadCoordinate,
+  osmElementCenter,
   readPublicText,
   regionCoordinate,
   rowToLead,
@@ -482,13 +483,16 @@ async function geocodeAddress(db, address, entityName) {
 }
 
 /**
- * Ambil titik node OSM milik entitas sendiri, bukan hasil pencarian jalan.
- * Hanya node dengan nama yang cocok yang diterima.
+ * Ambil titik entity OSM (node/way/relation). Untuk way dan relation, pusat
+ * elemen dari Overpass/OSM dipakai sebagai sumber entity yang eksplisit agar
+ * sekolah dan hotel berbentuk area tidak diblokir hanya karena bukan node.
  */
 async function osmEntityCoordinate(db, lead) {
-  const match = /^osm:node\/(\d+)$/i.exec(clean(lead.id));
+  const match = /^osm:(node|way|relation)\/(\d+)$/i.exec(clean(lead.id));
   if (!match) return null;
-  const cacheKey = `osm-coordinate:${match[1]}`;
+  const type = match[1].toLowerCase();
+  const osmId = match[2];
+  const cacheKey = `osm-coordinate:${type}:${osmId}`;
   const cached = await readMeta(db, cacheKey).catch(() => "");
   if (cached) {
     try {
@@ -498,22 +502,53 @@ async function osmEntityCoordinate(db, lead) {
       /* cache rusak; ulangi pencarian */
     }
   }
+
+  // Way/relation yang sudah membawa center dari Overpass tidak perlu request
+  // ulang; tandai sumbernya secara eksplisit agar lolos gate sebagai entity.
+  if (type !== "node") {
+    const storedLat = Number(lead.latitude);
+    const storedLon = Number(lead.longitude);
+    const storedIsOsm =
+      !clean(lead.coordinateSource) ||
+      /^OpenStreetMap\b/i.test(clean(lead.coordinateSource));
+    if (
+      storedIsOsm &&
+      validCoordinate(storedLat, storedLon) &&
+      !isRegionCoordinateSource(lead.coordinateSource)
+    ) {
+      return {
+        lat: storedLat,
+        lon: storedLon,
+        displayName: clean(lead.coordinateAddress || lead.name).slice(0, 300),
+        source: `OpenStreetMap ${type} (pusat elemen)`,
+      };
+    }
+  }
+
   try {
-    const response = await fetch(
-      `https://api.openstreetmap.org/api/0.6/node/${match[1]}.json`,
-      {
-        headers: { "User-Agent": USER_AGENT, Accept: "application/json" },
-        signal: AbortSignal.timeout(GEO_TIMEOUT_MS),
-      },
-    );
+    const endpoint =
+      type === "node"
+        ? `https://api.openstreetmap.org/api/0.6/node/${osmId}.json`
+        : `https://api.openstreetmap.org/api/0.6/${type}/${osmId}/full.json`;
+    const response = await fetch(endpoint, {
+      headers: { "User-Agent": USER_AGENT, Accept: "application/json" },
+      signal: AbortSignal.timeout(GEO_TIMEOUT_MS),
+    });
     if (!response.ok) return null;
     const body = await response.json();
-    const element = body?.elements?.[0];
+    const center = osmElementCenter(body?.elements, type, osmId);
+    const element = center?.element;
     const tags = element?.tags || {};
-    if (!element || !coordinateCandidateMatchesName(lead.name, tags.name)) return null;
+    if (
+      !center ||
+      !validCoordinate(center.lat, center.lon) ||
+      !coordinateCandidateMatchesName(lead.name, tags.name)
+    ) {
+      return null;
+    }
     const result = {
-      lat: Number(element.lat),
-      lon: Number(element.lon),
+      lat: center.lat,
+      lon: center.lon,
       displayName: clean(
         tags["addr:full"] ||
           [
@@ -525,9 +560,11 @@ async function osmEntityCoordinate(db, lead) {
             .filter(Boolean)
             .join(", "),
       ).slice(0, 300),
-      source: "OpenStreetMap node",
+      source:
+        type === "node"
+          ? "OpenStreetMap node"
+          : `OpenStreetMap ${type} (pusat elemen)`,
     };
-    if (!validCoordinate(result.lat, result.lon)) return null;
     await writeMeta(db, cacheKey, JSON.stringify(result)).catch(() => undefined);
     return result;
   } catch {
@@ -847,7 +884,7 @@ export async function researchCorporateLead(db, leadId, env = {}) {
     !coordinate &&
     validCoordinate(verifier.latitude, verifier.longitude) &&
     inIndonesia(verifier.latitude, verifier.longitude) &&
-    coordinateInRegion(lead.city, verifier.latitude, verifier.longitude) !== false &&
+    coordinateInRegion(lead.city, lead.area, verifier.latitude, verifier.longitude) !== false &&
     verifier.locationVerified === true &&
     coordinateCandidateMatchesName(lead.name, verifier.address)
   ) {
@@ -855,12 +892,13 @@ export async function researchCorporateLead(db, leadId, env = {}) {
       lat: Number(verifier.latitude),
       lon: Number(verifier.longitude),
       displayName: address,
-      source: "Nominatim/OpenStreetMap (nama cocok)",
+      source: "Panel AI (verifier, nama cocok)",
     };
   }
   if (
     coordinate &&
-    coordinateInRegion(lead.city, coordinate.lat, coordinate.lon) === false
+    !/^Dikonfirmasi manual\b/i.test(clean(coordinate.source)) &&
+    coordinateInRegion(lead.city, lead.area, coordinate.lat, coordinate.lon) === false
   ) {
     coordinate = null;
   }

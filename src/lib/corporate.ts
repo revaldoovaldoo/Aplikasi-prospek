@@ -12,6 +12,74 @@ export const CORPORATE_CITIES = [
   "Sukabumi",
 ];
 
+/** Bbox yang sama dengan worker agar status koordinat konsisten di kedua sisi. */
+const CORPORATE_CITY_BOUNDS: Record<string, [number, number, number, number]> = {
+  Jakarta: [-6.37, 106.68, -6.08, 106.97],
+  Depok: [-6.49, 106.72, -6.33, 106.9],
+  Bekasi: [-6.38, 106.95, -6.18, 107.16],
+  "Kota Bogor": [-6.66, 106.7, -6.52, 106.87],
+  "Kab. Bogor": [-6.78, 106.4, -6.43, 107.06],
+  Tangerang: [-6.33, 106.53, -6.0, 106.79],
+  Serang: [-6.22, 106.02, -5.98, 106.3],
+  Subang: [-6.75, 107.3, -6.2, 107.85],
+  Sukabumi: [-7.3, 106.5, -6.72, 107.2],
+};
+
+function regionNameKey(value?: string): string {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/^(?:kota|kabupaten|kab\.?)\s+/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function regionForLocation(city?: string, area?: string): string | null {
+  const target = String(city || "").trim().toLowerCase();
+  const areaText = String(area || "").trim().toLowerCase();
+  const targetKey = regionNameKey(city);
+  const areaKey = regionNameKey(area);
+  return (
+    CORPORATE_CITIES.find((name) => name.toLowerCase() === target) ||
+    CORPORATE_CITIES.find((name) => regionNameKey(name) === targetKey) ||
+    CORPORATE_CITIES.find((name) => regionNameKey(name) === areaKey) ||
+    CORPORATE_CITIES.find((name) => target.includes(name.toLowerCase())) ||
+    CORPORATE_CITIES.find((name) => areaText.includes(name.toLowerCase())) ||
+    null
+  );
+}
+
+/** Validasi bbox kota/area; null bila wilayah tidak dikenali. */
+export function coordinateInRegion(
+  city: string | undefined,
+  area: string | undefined,
+  latitude: number,
+  longitude: number,
+  padding = 0.08,
+): boolean | null {
+  const region = regionForLocation(city, area);
+  if (!region) return null;
+  const bounds = CORPORATE_CITY_BOUNDS[region];
+  if (!bounds || !Number.isFinite(latitude) || !Number.isFinite(longitude)) return false;
+  const [south, west, north, east] = bounds;
+  return (
+    latitude >= south - padding &&
+    latitude <= north + padding &&
+    longitude >= west - padding &&
+    longitude <= east + padding
+  );
+}
+
+function normalizeCoordinateSource(source?: string, sourceLeadId?: string): string {
+  const value = String(source || "").trim();
+  if (!/^OpenStreetMap$/i.test(value)) return value;
+  const match = /^osm:(node|way|relation)\//i.exec(String(sourceLeadId || "").trim());
+  if (!match) return value;
+  const type = match[1].toLowerCase();
+  return type === "node"
+    ? "OpenStreetMap node"
+    : `OpenStreetMap ${type} (pusat elemen)`;
+}
+
 export const CORPORATE_CITY_LABELS: Record<string, string> = {
   Sukabumi: "Kab. Sukabumi",
 };
@@ -266,24 +334,34 @@ export function isApproximateCoordinate(lead: {
  * wilayah, dan panel AI tanpa konfirmasi tetap berstatus "review".
  */
 export function coordinateReviewStatus(lead: {
+  id?: string;
+  city?: string;
+  area?: string;
+  sourceLeadId?: string;
   latitude?: number;
   longitude?: number;
   coordinateSource?: string;
 }): "verified" | "review" | "missing" {
   const latitude = Number(lead.latitude);
   const longitude = Number(lead.longitude);
+  const source = normalizeCoordinateSource(
+    lead.coordinateSource,
+    lead.sourceLeadId || lead.id,
+  );
+  const manual = /^Dikonfirmasi manual\b/i.test(source);
   const valid =
     Number.isFinite(latitude) &&
     Number.isFinite(longitude) &&
     latitude !== 0 &&
     longitude !== 0 &&
     Math.abs(latitude) <= 90 &&
-    Math.abs(longitude) <= 180;
-  if (!valid || isApproximateCoordinate(lead)) return "missing";
-  const source = lead.coordinateSource?.trim() || "";
-  return /^(?:Dikonfirmasi manual\b|OpenStreetMap node\b|Nominatim\/OpenStreetMap \(nama cocok\))/i.test(
-    source,
-  )
+    Math.abs(longitude) <= 180 &&
+    (manual || coordinateInRegion(lead.city, lead.area, latitude, longitude) !== false);
+  if (!valid || isApproximateCoordinate({ coordinateSource: source })) return "missing";
+  return manual ||
+    /^(?:OpenStreetMap (?:node|way|relation)\b|Nominatim\/OpenStreetMap \(nama cocok\))/i.test(
+      source,
+    )
     ? "verified"
     : "review";
 }
@@ -315,12 +393,32 @@ export function isLeadPublishable(lead: CorporateLead): boolean {
 }
 
 /** Field Prospek yang bisa diisi dari hasil riset Corporate Engine. */
-export function companyFieldsFromLead(lead: CorporateLead): Partial<Company> {
+export function companyFieldsFromLead(
+  lead: CorporateLead,
+  existing?: Company,
+  options: { verifiedCoordinateOnly?: boolean } = {},
+): Partial<Company> {
   const location = [lead.area?.trim(), lead.city?.trim()].filter(Boolean).join(", ");
   const latitude = Number(lead.latitude);
   const longitude = Number(lead.longitude);
   const hasCoordinate =
     Number.isFinite(latitude) && latitude !== 0 && Number.isFinite(longitude) && longitude !== 0;
+  const preserveCoordinate = Boolean(
+    existing && coordinateReviewStatus(existing) === "verified",
+  );
+  const coordinateVerified =
+    coordinateReviewStatus({
+      id: lead.id,
+      city: lead.city,
+      area: lead.area,
+      latitude,
+      longitude,
+      coordinateSource: lead.coordinateSource,
+    }) === "verified";
+  const includeCoordinate =
+    hasCoordinate &&
+    !preserveCoordinate &&
+    (!options.verifiedCoordinateOnly || coordinateVerified);
   return {
     name: lead.name,
     ...(lead.website?.trim() ? { website: lead.website.trim() } : {}),
@@ -330,7 +428,7 @@ export function companyFieldsFromLead(lead: CorporateLead): Partial<Company> {
     ...(lead.contactName?.trim() ? { contactName: lead.contactName.trim() } : {}),
     ...(lead.contactRole?.trim() ? { contactRole: lead.contactRole.trim() } : {}),
     ...(lead.contactSource?.trim() ? { contactSource: lead.contactSource.trim() } : {}),
-    ...(hasCoordinate
+    ...(includeCoordinate
       ? {
           latitude,
           longitude,
@@ -398,7 +496,9 @@ export function syncRobotCompanies(
   const companies = data.companies.map((company) => {
     const lead = matched.get(company.id);
     if (!lead) return company;
-    const fields = companyFieldsFromLead(lead);
+    const fields = companyFieldsFromLead(lead, company, {
+      verifiedCoordinateOnly: true,
+    });
     const next: Company = {
       ...company,
       ...fields,

@@ -171,6 +171,8 @@ export default function CorporateLeadDialog({
             latitude={lead.latitude}
             longitude={lead.longitude}
             address={lead.coordinateAddress}
+            city={lead.city}
+            area={lead.area}
             source={lead.coordinateSource}
           />
 

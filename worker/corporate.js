@@ -35,12 +35,22 @@ const REGION_COORDINATES = new Map(
 const DEFAULT_REGION =
   CORPORATE_CITIES.find((city) => city.name === "Jakarta") ?? CORPORATE_CITIES[0];
 
-/** Cocokkan nama kota persis, atau nama wilayah yang menyebut kota tersebut. */
+/** Cocokkan nama kota/wilayah, termasuk “Kota Bogor” dengan “Bogor”. */
+function regionNameKey(value) {
+  return clean(value)
+    .toLowerCase()
+    .replace(/^(?:kota|kabupaten|kab\.?)\s+/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function regionByName(value) {
   const target = clean(value).toLowerCase();
+  const targetKey = regionNameKey(value);
   if (!target) return null;
   return (
     CORPORATE_CITIES.find((city) => city.name.toLowerCase() === target) ||
+    CORPORATE_CITIES.find((city) => regionNameKey(city.name) === targetKey) ||
     CORPORATE_CITIES.find((city) => target.includes(city.name.toLowerCase())) ||
     null
   );
@@ -107,27 +117,30 @@ const NON_ENTITY_COORDINATE_TYPES = new Set([
   "postcode",
 ]);
 
-function coordinateNameTokens(name) {
+function coordinateNameKey(name) {
   return clean(name)
     .toLowerCase()
-    .replace(
-      /\b(?:pt|cv|tbk|persero|ud|pd|hotel|resort|sekolah|school|sma|smk|smp|sd|universitas|university|institut|kampus|the|and|by)\b/g,
-      " ",
-    )
-    .split(/[^a-z0-9]+/)
-    .filter((token) => token.length >= 3);
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/^(?:pt|cv|tbk|persero|ud|pd)\s+/, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 /**
- * Nama pada hasil geocoder harus memuat nama entitas, bukan hanya nama jalan.
- * Ini mencegah “Jalan Garuda Ujung” dipakai sebagai lokasi Lazuardi.
+ * Nama pada hasil geocoder harus memuat nama entitas secara utuh, bukan hanya
+ * beberapa kata yang kebetulan sama. Contoh: “Lazuardi Global Islamic Center”
+ * tidak boleh dipakai untuk “Lazuardi Global Islamic School”.
  */
 export function coordinateCandidateMatchesName(entityName, candidateName) {
-  const tokens = coordinateNameTokens(entityName);
-  if (tokens.length === 0) return false;
-  const haystack = clean(candidateName).toLowerCase();
-  const matched = tokens.filter((token) => haystack.includes(token));
-  return tokens.length === 1 ? matched.length === 1 : matched.length >= 2;
+  const candidate = coordinateNameKey(candidateName);
+  if (!candidate) return false;
+  const variants = clean(entityName)
+    .split(";")
+    .map(coordinateNameKey)
+    .filter(Boolean);
+  return variants.some(
+    (variant) => candidate === variant || candidate.includes(variant),
+  );
 }
 
 export function isRoadCoordinate(candidate = {}) {
@@ -149,15 +162,68 @@ function isVerifiedCoordinateSource(source) {
   const value = clean(source);
   return (
     isManualCoordinateSource(value) ||
-    /^OpenStreetMap node\b/i.test(value) ||
+    /^OpenStreetMap (?:node|way|relation)\b/i.test(value) ||
     /^Nominatim\/OpenStreetMap \(nama cocok\)/i.test(value)
   );
+}
+
+/** Pusat elemen OSM: node memakai titiknya, way/relation memakai pusat bbox. */
+export function osmElementCenter(elements, type, id) {
+  const list = Array.isArray(elements) ? elements : [];
+  const targetType = clean(type).toLowerCase();
+  const targetId = clean(id);
+  const element =
+    list.find(
+      (item) =>
+        clean(item?.type).toLowerCase() === targetType &&
+        String(item?.id ?? "") === targetId,
+    ) || list[0];
+  if (!element) return null;
+  if (targetType === "node") {
+    const lat = Number(element.lat);
+    const lon = Number(element.lon);
+    return Number.isFinite(lat) && Number.isFinite(lon)
+      ? { lat, lon, element }
+      : null;
+  }
+  const points = list.filter(
+    (item) =>
+      Number.isFinite(Number(item?.lat)) && Number.isFinite(Number(item?.lon)),
+  );
+  if (points.length === 0) return null;
+  const lats = points.map((item) => Number(item.lat));
+  const lons = points.map((item) => Number(item.lon));
+  return {
+    lat: (Math.min(...lats) + Math.max(...lats)) / 2,
+    lon: (Math.min(...lons) + Math.max(...lons)) / 2,
+    element,
+  };
+}
+
+/**
+ * Data lama menyimpan sumber “OpenStreetMap” tanpa jenis elemen. Jika id-nya
+ * jelas node/way/relation, ubah menjadi sumber entity yang eksplisit.
+ */
+export function normalizeOsmCoordinateSource(source, id = "") {
+  const value = clean(source);
+  if (!/^OpenStreetMap$/i.test(value)) return value;
+  const match = /^osm:(node|way|relation)\//i.exec(clean(id));
+  if (!match) return value;
+  const type = match[1].toLowerCase();
+  return type === "node"
+    ? "OpenStreetMap node"
+    : `OpenStreetMap ${type} (pusat elemen)`;
 }
 
 /** Status koordinat untuk gerbang Telegram, Prospek, dan tampilan dashboard. */
 export function coordinateReviewStatus(lead = {}) {
   const latitude = Number(lead.latitude);
   const longitude = Number(lead.longitude);
+  const source = normalizeOsmCoordinateSource(
+    lead.coordinateSource,
+    lead.sourceLeadId || lead.id,
+  );
+  const manual = isManualCoordinateSource(source);
   const valid =
     Number.isFinite(latitude) &&
     Number.isFinite(longitude) &&
@@ -166,10 +232,10 @@ export function coordinateReviewStatus(lead = {}) {
     longitude >= -180 &&
     longitude <= 180 &&
     !(latitude === 0 && longitude === 0) &&
-    coordinateInRegion(lead.city, latitude, longitude) !== false;
+    (manual || coordinateInRegion(lead.city, lead.area, latitude, longitude) !== false);
   if (!valid) return "missing";
-  if (isRegionCoordinateSource(lead.coordinateSource)) return "missing";
-  return isVerifiedCoordinateSource(lead.coordinateSource) ? "verified" : "review";
+  if (!manual && isRegionCoordinateSource(source)) return "missing";
+  return isVerifiedCoordinateSource(source) ? "verified" : "review";
 }
 
 /** Hanya koordinat entitas yang sudah jelas sumbernya yang boleh dipublikasikan. */
@@ -178,11 +244,12 @@ export function coordinateReadyForPublish(lead = {}) {
 }
 
 /**
- * True/false bila kota dikenal; null bila kota tidak ada di daftar wilayah.
- * Padding kecil memberi ruang untuk entitas di pinggir bbox.
+ * True/false bila kota/wilayah dikenal; null bila keduanya tidak dikenali.
+ * City dicoba lebih dulu, lalu area. Padding kecil memberi ruang untuk
+ * entitas di pinggir bbox.
  */
-export function coordinateInRegion(city, latitude, longitude, padding = 0.08) {
-  const region = CORPORATE_CITIES.find((item) => item.name === clean(city));
+export function coordinateInRegion(city, area, latitude, longitude, padding = 0.08) {
+  const region = regionByName(city) || regionByName(area);
   if (!region) return null;
   const lat = Number(latitude);
   const lng = Number(longitude);
@@ -200,8 +267,13 @@ export function coordinateInRegion(city, latitude, longitude, padding = 0.08) {
 export function resolveLeadCoordinates(lead = {}) {
   const latitude = Number(lead.latitude);
   const longitude = Number(lead.longitude);
+  const source = normalizeOsmCoordinateSource(
+    lead.coordinateSource,
+    lead.sourceLeadId || lead.id,
+  );
+  const manual = isManualCoordinateSource(source);
   const exact =
-    !isRegionCoordinateSource(lead.coordinateSource) &&
+    !isRegionCoordinateSource(source) &&
     Number.isFinite(latitude) &&
     Number.isFinite(longitude) &&
     latitude >= -90 &&
@@ -209,13 +281,13 @@ export function resolveLeadCoordinates(lead = {}) {
     longitude >= -180 &&
     longitude <= 180 &&
     !(latitude === 0 && longitude === 0) &&
-    coordinateInRegion(lead.city, latitude, longitude) !== false;
+    (manual || coordinateInRegion(lead.city, lead.area, latitude, longitude) !== false);
   if (exact) {
     return {
       latitude,
       longitude,
       coordinateAddress: clean(lead.coordinateAddress),
-      coordinateSource: clean(lead.coordinateSource) || "Koordinat tersimpan",
+      coordinateSource: source || "Koordinat tersimpan",
       approximate: false,
     };
   }
@@ -392,6 +464,13 @@ export function normalizeElements(elements, city, category, keep) {
     const center = element.center || {};
     const latitude = Number(center.lat);
     const longitude = Number(center.lon);
+    const elementType = clean(element.type).toLowerCase();
+    const coordinateSource =
+      Number.isFinite(latitude) && Number.isFinite(longitude)
+        ? elementType === "node"
+          ? "OpenStreetMap node"
+          : `OpenStreetMap ${elementType || "elemen"} (pusat elemen)`
+        : "";
     const coordinateAddress = clean(
       tags["addr:full"] ||
         [
@@ -428,7 +507,7 @@ export function normalizeElements(elements, city, category, keep) {
       latitude: Number.isFinite(latitude) ? latitude : 0,
       longitude: Number.isFinite(longitude) ? longitude : 0,
       coordinateAddress,
-      coordinateSource: Number.isFinite(latitude) && Number.isFinite(longitude) ? "OpenStreetMap" : "",
+      coordinateSource,
     });
   }
   leads.sort((a, b) => score(b) - score(a) || a.name.localeCompare(b.name, "id"));
@@ -523,6 +602,7 @@ export async function fetchCityLeads(cityName) {
 
 export function rowToLead(row) {
   const coordinate = resolveLeadCoordinates({
+    id: row.id,
     latitude: row.latitude,
     longitude: row.longitude,
     coordinateAddress: row.coordinate_address,
