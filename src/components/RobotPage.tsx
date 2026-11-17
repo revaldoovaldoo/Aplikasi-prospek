@@ -375,7 +375,8 @@ function RobotPanel({
           <span className="robot-screening-summary">
             Screening: clear {status.screeningStats.clear} · review{" "}
             {status.screeningStats.review} · error {status.screeningStats.error} ·
-            belum aktif {status.screeningStats.disabled}
+            belum aktif {status.screeningStats.disabled} · belum diperiksa{" "}
+            {status.screeningStats.unchecked}
           </span>
         ) : null}
         <span className="robot-chip">
@@ -776,7 +777,9 @@ export default function RobotPage({
         ? existing
           ? `${selected.name} diperbarui di Prospek.`
           : `${selected.name} masuk ke daftar Prospek.`
-        : `${selected.name} gagal masuk Prospek. Coba lagi.`,
+        : screeningReviewRequired(selected)
+          ? `${selected.name} menunggu konfirmasi review OpenSanctions; Prospek tidak diubah.`
+          : `${selected.name} gagal masuk Prospek. Coba lagi.`,
     );
     setSelected(null);
     if (id) onOpenCompany(id);

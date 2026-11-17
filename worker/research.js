@@ -1118,12 +1118,21 @@ export async function researchCorporateLead(db, leadId, env = {}) {
   const now = new Date().toISOString();
   const region = regionCoordinate(lead.city, lead.area);
   const screeningStatus = screening.status || "disabled";
-  const screeningEvidence = (screening.evidence || []).slice(0, 12);
+  const screeningEvidence = [...(screening.evidence || [])]
+    .map((item) => clean(item))
+    .filter(Boolean)
+    .sort()
+    .slice(0, 12);
   const screeningUnchanged =
     clean(lead.screeningStatus).toLowerCase() ===
       screeningStatus.toLowerCase() &&
-    JSON.stringify(lead.screeningEvidence || []) ===
+    JSON.stringify([...(lead.screeningEvidence || [])].sort()) ===
       JSON.stringify(screeningEvidence);
+  // Konfirmasi manusia tidak hilang hanya karena API sedang nonaktif/error.
+  // Saat hasil review kembali dengan bukti berbeda, gate tetap membuka ulang.
+  const keepConfirmedReview =
+    Boolean(clean(lead.screeningReviewedAt)) &&
+    (screeningUnchanged || screeningStatus === "disabled" || screeningStatus === "error");
   const nextLead = {
     ...lead,
     website: website || lead.website,
@@ -1148,10 +1157,10 @@ export async function researchCorporateLead(db, leadId, env = {}) {
     screeningCheckedAt: screening.checkedAt || now,
     // Konfirmasi dipertahankan hanya bila hasil screening tidak berubah.
     // Bila bukti berubah, review lama dibatalkan agar manusia meninjau ulang.
-    screeningReviewedAt: screeningUnchanged
+    screeningReviewedAt: keepConfirmedReview
       ? lead.screeningReviewedAt || ""
       : "",
-    screeningReviewedBy: screeningUnchanged
+    screeningReviewedBy: keepConfirmedReview
       ? lead.screeningReviewedBy || ""
       : "",
   };

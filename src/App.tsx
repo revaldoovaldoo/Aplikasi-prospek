@@ -25,8 +25,7 @@ import {
 import {
   companyFieldsFromLead,
   findCompanyForLead,
-  isApproximateCoordinate,
-  isLeadComplete,
+  isCorporateLeadAddable,
   pruneIncompleteRobotCompanies,
   scrubRobotCompanyCoordinates,
   syncRobotCompanies,
@@ -766,10 +765,12 @@ export default function App() {
   const addCorporateLead = (lead: CorporateLead, manual = false): string | null => {
     const current = dbRef.current;
     const existing = current ? findCompanyForLead(lead, current.companies) : null;
-    // Koordinat pusat wilayah hanya untuk tampilan/peta, bukan bukti entitas.
-    // Jangan biarkan jalur manual memasukkan lead dengan koordinat perkiraan.
-    if (isApproximateCoordinate(lead)) return existing ? existing.id : null;
-    if (!manual && !isLeadComplete(lead)) return existing ? existing.id : null;
+    // Gate yang sama juga berlaku untuk tombol manual di Corporate Engine.
+    // Review OpenSanctions yang belum dikonfirmasi dan titik pusat wilayah
+    // tidak boleh masuk Prospek lewat jalur mana pun.
+    if (!isCorporateLeadAddable(lead, manual)) {
+      return existing ? existing.id : null;
+    }
     const fields = companyFieldsFromLead(lead, existing ?? undefined, {
       verifiedCoordinateOnly: true,
     });

@@ -2,12 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   auditProspectTelegramHistory,
+  backfillCorporateScreening,
   auditTelegramProspects,
   buildTelegramMessage,
   publishLeadToProspect,
   reconcileTelegramProspects,
 } from "../worker/robot.js";
 import {
+  isCorporateLeadAddable,
   isLeadPublishable,
   pruneIncompleteRobotCompanies,
   scrubRobotCompanyCoordinates,
@@ -488,6 +490,79 @@ test("Prospek robot tidak dibuang hanya karena e-mail/website kosong", () => {
   const result = pruneIncompleteRobotCompanies(data as never);
   assert.deepEqual(result.companies.map((company) => company.id), ["co_robot_1"]);
   assert.equal(isLeadPublishable(lead as never), true);
+});
+
+test("publish Prospek menolak review OpenSanctions yang belum dikonfirmasi", async () => {
+  const result = await publishLeadToProspect(null as never, "owner-1", {
+    id: "lead-review",
+    name: "Hotel Contoh",
+    contactName: "Budi",
+    phone: "081234567890",
+    latitude: -6.2,
+    longitude: 106.8,
+    coordinateSource: "OpenStreetMap node",
+    screeningStatus: "review",
+  } as never);
+  assert.equal(result.added, false);
+});
+
+test("backfill screening tanpa key tidak menyentuh antrean", async () => {
+  const result = await backfillCorporateScreening(null as never, {} as never, 5);
+  assert.equal(result.skipped, true);
+  assert.equal(result.checked, 0);
+});
+
+test("sinkronisasi menghapus Prospek robot yang review screening-nya belum dikonfirmasi", () => {
+  const data = {
+    companies: [
+      {
+        id: "co_review",
+        name: "Hotel Review",
+        source: "Corporate Engine",
+        sourceLeadId: "lead-review",
+      },
+    ],
+    quotes: [],
+    locations: [],
+  };
+  const next = syncRobotCompanies(data as never, [
+    {
+      id: "lead-review",
+      name: "Hotel Review",
+      contactName: "Budi",
+      phone: "081234567890",
+      latitude: -6.2,
+      longitude: 106.8,
+      coordinateSource: "OpenStreetMap node",
+      screeningStatus: "review",
+    } as never,
+  ]);
+  assert.deepEqual(next.companies, []);
+});
+
+test("review OpenSanctions yang belum dikonfirmasi menahan tombol manual Corporate", () => {
+  const lead = {
+    id: "osm:node/1",
+    name: "Hotel Contoh",
+    contactName: "Budi",
+    phone: "081234567890",
+    latitude: -6.2,
+    longitude: 106.8,
+    coordinateSource: "OpenStreetMap node",
+    screeningStatus: "review",
+  };
+  assert.equal(isCorporateLeadAddable(lead as never, true), false);
+  assert.equal(
+    isCorporateLeadAddable(
+      { ...lead, screeningReviewedAt: "2026-11-17T05:00:00.000Z" } as never,
+      true,
+    ),
+    true,
+  );
+  assert.equal(
+    isCorporateLeadAddable({ ...lead, screeningStatus: "clear" } as never, true),
+    true,
+  );
 });
 
 test("Prospek robot tidak menyimpan titik pusat wilayah", () => {

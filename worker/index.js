@@ -23,6 +23,7 @@ import {
   sendQuoteWhatsApp,
 } from "./whatsapp.js";
 import {
+  backfillCorporateScreening,
   detectTelegramChat,
   ensureCronOwner,
   getCronHealth,
@@ -568,6 +569,36 @@ async function handleCorporateRobotStatus(request, env, auth) {
   }
 }
 
+async function handleCorporateScreeningBackfill(request, env, auth) {
+  if (request.method !== "POST") {
+    return new Response(null, {
+      status: 405,
+      headers: { Allow: "POST", "Cache-Control": "private, no-store" },
+    });
+  }
+  if (!isSameOriginRequest(request, env.APP_ORIGIN)) {
+    return json({ error: "Forbidden" }, 403);
+  }
+  if (!env.DB) return json({ error: "Database belum tersedia" }, 500);
+  const user = await auth.getUser(request);
+  if (!user) return json({ error: "Sign in required" }, 401);
+  let body = {};
+  try {
+    body = await request.json();
+  } catch {
+    /* limit opsional */
+  }
+  try {
+    return json(await backfillCorporateScreening(env.DB, env, body?.limit));
+  } catch (error) {
+    console.error(
+      "corporate_screening_backfill_api_error",
+      error instanceof Error ? error.message : "unknown error",
+    );
+    return json({ error: "Backfill screening belum berhasil." }, 502);
+  }
+}
+
 async function handleCorporateRobotScreeningReview(request, env, auth) {
   if (request.method !== "POST") {
     return new Response(null, {
@@ -1070,6 +1101,9 @@ function setup(env) {
       }
       if (url.pathname === "/api/corporate/robot/screening/review") {
         return handleCorporateRobotScreeningReview(request, environment, auth);
+      }
+      if (url.pathname === "/api/corporate/screening/backfill") {
+        return handleCorporateScreeningBackfill(request, environment, auth);
       }
       if (url.pathname === "/api/corporate/robot/run") {
         return handleCorporateRobotRun(request, environment, auth);

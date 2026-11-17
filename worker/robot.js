@@ -30,7 +30,10 @@ import {
   researchCorporateLead,
 } from "./research.js";
 import { openosintConfigured } from "./openosint.js";
-import { opensanctionsConfigured } from "./opensanctions.js";
+import {
+  opensanctionsConfigured,
+  screenLeadOpenSanctions,
+} from "./opensanctions.js";
 import { formatPicPhones, validPicPhone } from "./phone.js";
 import {
   sendWhatsAppTemplate,
@@ -2421,6 +2424,82 @@ export async function getCronHealth(db) {
   };
 }
 
+/**
+ * Backfill status screening untuk lead lama tanpa mengubah tahap robot.
+ * Jalankan dalam batch kecil dari tick robot atau endpoint admin; lead yang
+ * sudah punya status tidak disentuh agar hasil review tidak ter-flag ulang.
+ */
+export async function backfillCorporateScreening(db, env = {}, limit = 5) {
+  if (!opensanctionsConfigured(env)) {
+    return {
+      skipped: true,
+      checked: 0,
+      review: 0,
+      remaining: 0,
+      reason: "OPENSANCTIONS_API_KEY belum tersedia.",
+    };
+  }
+  await ensureCorporateSchema(db);
+  const size = Math.max(1, Math.min(25, Number(limit) || 5));
+  const rows = await db
+    .prepare(
+      `SELECT id, name, contact_name
+       FROM corporate_leads
+       WHERE screening_status = '' AND screening_reviewed_at = ''
+       ORDER BY RANDOM()
+       LIMIT ?`,
+    )
+    .bind(size)
+    .all();
+  let checked = 0;
+  let review = 0;
+  for (const row of rows.results ?? []) {
+    try {
+      const result = await screenLeadOpenSanctions(
+        db,
+        { id: row.id, name: row.name, contactName: row.contact_name || "" },
+        env,
+      );
+      if (!result || result.status === "disabled") continue;
+      const evidence = Array.isArray(result.evidence) ? result.evidence : [];
+      await db
+        .prepare(
+          `UPDATE corporate_leads
+           SET screening_status = ?, screening_evidence = ?, screening_checked_at = ?, updated_at = ?
+           WHERE id = ?`,
+        )
+        .bind(
+          result.status,
+          JSON.stringify(evidence.slice(0, 12)),
+          result.checkedAt || nowIso(),
+          nowIso(),
+          row.id,
+        )
+        .run();
+      checked += 1;
+      if (result.status === "review") review += 1;
+    } catch (error) {
+      console.error(
+        "corporate_screening_backfill_error",
+        row.id,
+        error instanceof Error ? error.message : "unknown error",
+      );
+    }
+  }
+  const remainingRow = await db
+    .prepare(
+      "SELECT COUNT(*) AS total FROM corporate_leads WHERE screening_status = '' AND screening_reviewed_at = ''",
+    )
+    .first()
+    .catch(() => null);
+  return {
+    skipped: false,
+    checked,
+    review,
+    remaining: Number(remainingRow?.total || 0),
+  };
+}
+
 async function readScreeningStats(db) {
   const row = await db
     .prepare(
@@ -2430,6 +2509,7 @@ async function readScreeningStats(db) {
          SUM(CASE WHEN screening_status = 'error' THEN 1 ELSE 0 END) AS error_total,
          SUM(CASE WHEN screening_status = 'disabled' THEN 1 ELSE 0 END) AS disabled_total,
          SUM(CASE WHEN screening_status = 'review' AND screening_reviewed_at = '' THEN 1 ELSE 0 END) AS pending_review,
+         SUM(CASE WHEN screening_status = '' THEN 1 ELSE 0 END) AS unchecked_total,
          COUNT(*) AS total
        FROM corporate_leads`,
     )
@@ -2441,6 +2521,7 @@ async function readScreeningStats(db) {
     error: Number(row?.error_total || 0),
     disabled: Number(row?.disabled_total || 0),
     pendingReview: Number(row?.pending_review || 0),
+    unchecked: Number(row?.unchecked_total || 0),
     total: Number(row?.total || 0),
   };
 }
@@ -2845,6 +2926,7 @@ export async function runCorporateRobot(db, env = {}, options = {}) {
   let lastError = "";
   let prospectSync = null;
   let coordinateRepair = null;
+  let screeningBackfill = null;
   const updated = [];
 
   try {
@@ -2974,6 +3056,18 @@ export async function runCorporateRobot(db, env = {}, options = {}) {
     });
     whatsappSent += whatsappPending.sent;
 
+    // Backfill screening berjalan setelah antrean utama selesai, sehingga
+    // lead lama tidak memperlambat atau memblokir pekerjaan robot baru.
+    screeningBackfill = await backfillCorporateScreening(db, env, 3).catch(
+      (error) => {
+        console.error(
+          "corporate_robot_screening_backfill_error",
+          error instanceof Error ? error.message : "unknown error",
+        );
+        return null;
+      },
+    );
+
     const finishedAt = nowIso();
     await db
       .prepare(
@@ -3007,6 +3101,7 @@ export async function runCorporateRobot(db, env = {}, options = {}) {
       error: lastError,
       prospectSync,
       coordinateRepair,
+      screeningBackfill,
       updated,
       status: await getRobotStatus(db, env, ownerId),
     };

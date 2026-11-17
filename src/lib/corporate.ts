@@ -254,6 +254,7 @@ export interface CorporateRobotScreeningStats {
   review: number;
   error: number;
   disabled: number;
+  unchecked: number;
   pendingReview: number;
   total: number;
 }
@@ -415,6 +416,20 @@ export function isLeadComplete(lead: CorporateLead): boolean {
   );
 }
 
+/**
+ * Gate yang sama untuk tombol “Masuk Prospek”, baik dari Robot AI maupun
+ * Corporate Engine. Mode manual hanya boleh melewati kelengkapan data biasa;
+ * review OpenSanctions dan titik pusat wilayah tetap tidak boleh dilewati.
+ */
+export function isCorporateLeadAddable(
+  lead: CorporateLead,
+  manual = false,
+): boolean {
+  if (screeningReviewRequired(lead)) return false;
+  if (isApproximateCoordinate(lead)) return false;
+  return manual || isLeadComplete(lead);
+}
+
 /** Hasil OpenSanctions berisiko tinggi harus dikonfirmasi manusia. */
 export function screeningReviewRequired(lead: {
   screeningStatus?: string;
@@ -562,6 +577,28 @@ export function syncRobotCompanies(
   data: Database,
   leads: CorporateLead[],
 ): Database {
+  // Screening yang belum dikonfirmasi juga berlaku surut untuk record robot
+  // lama. Record yang sudah punya penawaran dipertahankan agar dokumen bisnis
+  // tidak hilang; record robot tanpa penawaran tidak boleh tetap di Prospek.
+  const blockedLeadIds = new Set(
+    leads.filter(screeningReviewRequired).map((lead) => lead.id),
+  );
+  const quotedCompanyIds = new Set(
+    (data.quotes || [])
+      .filter((quote) => quote.quoteFile)
+      .map((quote) => quote.companyId),
+  );
+  const keptCompanies = data.companies.filter(
+    (company) =>
+      !isRobotCompany(company) ||
+      !company.sourceLeadId ||
+      !blockedLeadIds.has(company.sourceLeadId) ||
+      quotedCompanyIds.has(company.id),
+  );
+  if (keptCompanies.length !== data.companies.length) {
+    data = { ...data, companies: keptCompanies };
+  }
+
   const complete = leads.filter(isLeadPublishable);
   if (complete.length === 0) return data;
 

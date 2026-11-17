@@ -8,6 +8,7 @@ import {
   categoryLabel,
   findCompanyForLead,
   oldestCity,
+  screeningReviewRequired,
   websiteHost,
   type CorporateData,
   type CorporateLead,
@@ -278,7 +279,9 @@ export default function CorporatePage({ companies, onVisitLead, onOpenCompany }:
         ? existing
           ? `${selected.name} diperbarui di Prospek.`
           : `${selected.name} masuk ke daftar Prospek.`
-        : `${selected.name} belum lengkap; Prospek tidak diubah.`,
+        : screeningReviewRequired(selected)
+          ? `${selected.name} menunggu konfirmasi review OpenSanctions di Robot AI; Prospek tidak diubah.`
+          : `${selected.name} belum lengkap; Prospek tidak diubah.`,
     );
     setSelected(null);
     if (id) onOpenCompany(id);

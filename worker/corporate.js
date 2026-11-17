@@ -2158,11 +2158,13 @@ export async function refreshCorporateCity(db, cityName, seed) {
       .bind(city.name, now),
   ];
   for (const lead of leads) {
+    const prior = existing.get(lead.id) || seedById.get(lead.id) || {};
+    const sameEntity = clean(prior.name).toLowerCase() === clean(lead.name).toLowerCase();
     statements.push(
       db
         .prepare(
-          `INSERT INTO corporate_leads (id, name, city, area, category, email, phone, website, contact_name, contact_role, contact_url, contact_source, latitude, longitude, coordinate_address, coordinate_source, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `INSERT INTO corporate_leads (id, name, city, area, category, email, phone, website, contact_name, contact_role, contact_url, contact_source, latitude, longitude, coordinate_address, coordinate_source, screening_status, screening_evidence, screening_checked_at, screening_reviewed_at, screening_reviewed_by, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(id) DO UPDATE SET
              name = excluded.name,
              city = excluded.city,
@@ -2198,6 +2200,11 @@ export async function refreshCorporateCity(db, cityName, seed) {
           lead.longitude || 0,
           lead.coordinateAddress || "",
           lead.coordinateSource || "",
+          sameEntity ? prior.screeningStatus || "" : "",
+          JSON.stringify(sameEntity ? prior.screeningEvidence || [] : []),
+          sameEntity ? prior.screeningCheckedAt || "" : "",
+          sameEntity ? prior.screeningReviewedAt || "" : "",
+          sameEntity ? prior.screeningReviewedBy || "" : "",
           now,
         ),
     );
