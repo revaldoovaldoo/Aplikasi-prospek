@@ -69,6 +69,13 @@ test("status titik mengikuti sumber koordinat", () => {
     }),
     "missing",
   );
+  assert.equal(
+    coordinateReviewStatus({
+      ...base,
+      coordinateSource: "Panel AI (verifier, nama cocok)",
+    }),
+    "review",
+  );
 });
 
 test("format koordinat kosong tidak menampilkan nol", () => {

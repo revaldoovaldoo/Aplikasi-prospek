@@ -315,12 +315,30 @@ export function isLeadPublishable(lead: CorporateLead): boolean {
 }
 
 /** Field Prospek yang bisa diisi dari hasil riset Corporate Engine. */
-export function companyFieldsFromLead(lead: CorporateLead): Partial<Company> {
+export function companyFieldsFromLead(
+  lead: CorporateLead,
+  existing?: Company,
+  options: { verifiedCoordinateOnly?: boolean } = {},
+): Partial<Company> {
   const location = [lead.area?.trim(), lead.city?.trim()].filter(Boolean).join(", ");
   const latitude = Number(lead.latitude);
   const longitude = Number(lead.longitude);
   const hasCoordinate =
     Number.isFinite(latitude) && latitude !== 0 && Number.isFinite(longitude) && longitude !== 0;
+  // Jangan biarkan data lead lama mengembalikan titik yang sudah diverifikasi.
+  const preserveCoordinate = Boolean(
+    existing && coordinateReviewStatus(existing) === "verified",
+  );
+  const coordinateVerified =
+    coordinateReviewStatus({
+      latitude,
+      longitude,
+      coordinateSource: lead.coordinateSource,
+    }) === "verified";
+  const includeCoordinate =
+    hasCoordinate &&
+    !preserveCoordinate &&
+    (!options.verifiedCoordinateOnly || coordinateVerified);
   return {
     name: lead.name,
     ...(lead.website?.trim() ? { website: lead.website.trim() } : {}),
@@ -330,7 +348,7 @@ export function companyFieldsFromLead(lead: CorporateLead): Partial<Company> {
     ...(lead.contactName?.trim() ? { contactName: lead.contactName.trim() } : {}),
     ...(lead.contactRole?.trim() ? { contactRole: lead.contactRole.trim() } : {}),
     ...(lead.contactSource?.trim() ? { contactSource: lead.contactSource.trim() } : {}),
-    ...(hasCoordinate
+    ...(includeCoordinate
       ? {
           latitude,
           longitude,
@@ -398,7 +416,9 @@ export function syncRobotCompanies(
   const companies = data.companies.map((company) => {
     const lead = matched.get(company.id);
     if (!lead) return company;
-    const fields = companyFieldsFromLead(lead);
+    const fields = companyFieldsFromLead(lead, company, {
+      verifiedCoordinateOnly: true,
+    });
     const next: Company = {
       ...company,
       ...fields,

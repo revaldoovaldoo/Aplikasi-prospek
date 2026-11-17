@@ -26,6 +26,7 @@ import {
 } from "./corporate.js";
 import { researchCorporateLead } from "./research.js";
 import { openosintConfigured } from "./openosint.js";
+import { opensanctionsConfigured } from "./opensanctions.js";
 import { formatPicPhones, validPicPhone } from "./phone.js";
 import {
   sendWhatsAppTemplate,
@@ -38,9 +39,10 @@ const DEFAULT_TELEGRAM_PHONE = "+6285156590261";
 const MAX_APP_STATE_CHARS = 1_500_000;
 
 /**
- * Struktur 10 agen: 3 Finding, 4 Klarifikasi (3 Exa + OpenOSINT native), dan
- * 3 Publish dengan pekerjaan terpisah (Telegram, WhatsApp, dan Prospek).
- * OpenOSINT berjalan langsung di Worker melalui DNS-over-HTTPS dan RDAP.
+ * Struktur 11 agen: 3 Finding, 5 Klarifikasi (3 Exa + OpenOSINT native +
+ * OpenSanctions), dan 3 Publish dengan pekerjaan terpisah (Telegram, WhatsApp,
+ * dan Prospek). OpenOSINT berjalan langsung di Worker melalui DNS-over-HTTPS
+ * dan RDAP; OpenSanctions memakai API /match bila kredensial tersedia.
  */
 const AGENT_BLUEPRINT = {
   finding: [
@@ -87,6 +89,12 @@ const AGENT_BLUEPRINT = {
       name: "OpenOSINT",
       role: "Memeriksa DNS dan registrasi domain secara pasif setelah klarifikasi menerima domain resmi.",
       provider: "OpenOSINT native (DNS/RDAP)",
+    },
+    {
+      id: "clarification-opensanctions",
+      name: "OpenSanctions",
+      role: "Menyaring nama perusahaan dan nama PIC terhadap daftar sanksi, debarment, dan PEP sebagai bukti review; bukan verifikasi nomor/e-mail.",
+      provider: "OpenSanctions /match",
     },
   ],
   publish: [
@@ -139,6 +147,14 @@ function agentStructure(env = {}, telegramConfigured = false) {
     clarification: AGENT_BLUEPRINT.clarification.map((agent) => {
       if (agent.id === "clarification-openosint") {
         return { ...agent, active: true };
+      }
+      if (agent.id === "clarification-opensanctions") {
+        const active = opensanctionsConfigured(env);
+        return {
+          ...agent,
+          active,
+          provider: active ? agent.provider : "OpenSanctions (belum aktif)",
+        };
       }
       return {
         ...agent,
@@ -1762,6 +1778,36 @@ export async function publishLeadToProspect(db, ownerId, lead) {
     clean(prior.location) ||
     data.locations?.[0] ||
     "Jakarta";
+  // Koreksi manusia atau node OSM yang sudah tersimpan tidak boleh ditimpa
+  // koordinat lama dari lead robot. Lazuardi sempat kembali ke titik jalan
+  // karena publish ulang membawa koordinat Panel AI yang lama.
+  const lockPriorCoordinate = Boolean(
+    existing &&
+      coordinateReadyForPublish(prior) &&
+      (/^Dikonfirmasi manual\b/i.test(clean(prior.coordinateSource)) ||
+        /^OpenStreetMap node\b/i.test(clean(prior.coordinateSource))),
+  );
+  const coordinateFields = lockPriorCoordinate
+    ? {
+        latitude: Number(prior.latitude),
+        longitude: Number(prior.longitude),
+        coordinateAddress: clean(prior.coordinateAddress),
+        coordinateSource: clean(prior.coordinateSource),
+      }
+    : {
+        latitude:
+          Number.isFinite(latitude) && latitude !== 0
+            ? latitude
+            : Number(prior.latitude || 0),
+        longitude:
+          Number.isFinite(longitude) && longitude !== 0
+            ? longitude
+            : Number(prior.longitude || 0),
+        coordinateAddress:
+          clean(lead.coordinateAddress) || clean(prior.coordinateAddress),
+        coordinateSource:
+          clean(lead.coordinateSource) || clean(prior.coordinateSource),
+      };
   const robotFields = {
     name: clean(lead.name),
     location,
@@ -1771,10 +1817,7 @@ export async function publishLeadToProspect(db, ownerId, lead) {
     contactName: sanitizePicName(lead.contactName),
     contactRole: clean(lead.contactRole) || clean(prior.contactRole),
     contactSource: clean(lead.contactSource) || clean(prior.contactSource),
-    latitude: Number.isFinite(latitude) && latitude !== 0 ? latitude : Number(prior.latitude || 0),
-    longitude: Number.isFinite(longitude) && longitude !== 0 ? longitude : Number(prior.longitude || 0),
-    coordinateAddress: clean(lead.coordinateAddress) || clean(prior.coordinateAddress),
-    coordinateSource: clean(lead.coordinateSource) || clean(prior.coordinateSource),
+    ...coordinateFields,
     validationStatus:
       clean(prior.validationStatus) === "verified"
         ? "verified"
@@ -2399,10 +2442,10 @@ export async function getRobotStatus(db, env = {}, ownerId = "") {
     "Scheduler 24/7 memakai GitHub Actions OIDC; tidak perlu repository secret tambahan.",
   );
   notes.push(
-    "Struktur 10 agen: 3 Finding (Profil Entitas, Sinyal Publik, Penilai Kebutuhan), 4 Klarifikasi (Scout, Contact Finder, Verifier, OpenOSINT), 3 Publish (Kurir Telegram, Agen WhatsApp, Penulis Prospek).",
+    "Struktur 11 agen: 3 Finding (Profil Entitas, Sinyal Publik, Penilai Kebutuhan), 5 Klarifikasi (Scout, Contact Finder, Verifier, OpenOSINT, OpenSanctions), 3 Publish (Kurir Telegram, Agen WhatsApp, Penulis Prospek).",
   );
   notes.push(
-    "Klarifikasi memakai Exa Answer dan OpenOSINT native untuk DNS/DNS-over-HTTPS dan RDAP domain; Finding memakai website publik gratis dan Exa Search. Tidak ada provider WormGPT/FraudGPT/GhostGPT/HackerGPT/Hexstrike.",
+    "Klarifikasi memakai Exa Answer, OpenOSINT native untuk DNS/DNS-over-HTTPS dan RDAP domain, serta OpenSanctions untuk screening nama perusahaan/PIC terhadap sanksi, debarment, dan PEP; Finding memakai website publik gratis dan Exa Search. Tidak ada provider WormGPT/FraudGPT/GhostGPT/HackerGPT/Hexstrike.",
   );
   notes.push(
     "Publish dipisah menjadi tiga pekerjaan: publish_telegram mengirim pesan, agen WhatsApp masih berupa draft yang belum membalas otomatis, dan publish_prospect menulis daftar Prospek. Telegram dikirim satu kali setelah Klarifikasi menerima lead.",

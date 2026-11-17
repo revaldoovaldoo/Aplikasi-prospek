@@ -1,11 +1,12 @@
 /**
  * Panel riset dan validasi lead Corporate Engine.
  *
- * Empat agen Klarifikasi berjalan bersamaan:
+ * Lima agen Klarifikasi:
  * 1. Scout          — profil, website resmi, alamat, koordinat (Exa Answer).
  * 2. Contact Finder — PIC, jabatan, e-mail, nomor telepon (Exa Answer).
  * 3. Verifier       — memeriksa ulang temuan secara independen (Exa Answer).
  * 4. OpenOSINT      — DNS/RDAP pasif dari domain resmi (self-host opsional).
+ * 5. OpenSanctions  — screening nama perusahaan/PIC terhadap sanksi/PEP.
  *
  * Hasil AI tidak langsung dipercaya. Worker memeriksa ulang website yang bisa
  * dibuka, kecocokan nama, domain/MX e-mail, nomor telepon, dan koordinat.
@@ -27,6 +28,7 @@ import {
   sanitizePicName,
 } from "./corporate.js";
 import { collectOpenOsintEvidence } from "./openosint.js";
+import { screenLeadOpenSanctions } from "./opensanctions.js";
 import {
   formatPicPhones,
   selectPicPhones,
@@ -724,6 +726,14 @@ export async function researchCorporateLead(db, leadId, env = {}) {
   const personName = sanitizePicName(
     verifier.personName || contact.personName || lead.contactName,
   );
+  // Agen Klarifikasi kelima: screening sanksi/PEP untuk nama perusahaan dan
+  // nama PIC. Ini bukan verifikasi kepemilikan nomor/e-mail; hasilnya menjadi
+  // bukti tambahan yang harus dibaca bersama bukti kontak lain.
+  const screening = await screenLeadOpenSanctions(
+    db,
+    { ...lead, name: lead.name, contactName: personName },
+    env,
+  );
   const role = clean(verifier.role || contact.role || lead.contactRole);
   const address = clean(
     verifier.address ||
@@ -851,11 +861,14 @@ export async function researchCorporateLead(db, leadId, env = {}) {
     verifier.locationVerified === true &&
     coordinateCandidateMatchesName(lead.name, verifier.address)
   ) {
+    // Koordinat dari panel verifier tetap berstatus review. Jangan memakai
+    // label Nominatim/OpenStreetMap karena itu akan melewati gate tanpa
+    // geocoding yang benar-benar mencocokkan entitas.
     coordinate = {
       lat: Number(verifier.latitude),
       lon: Number(verifier.longitude),
       displayName: address,
-      source: "Nominatim/OpenStreetMap (nama cocok)",
+      source: "Panel AI (verifier, nama cocok)",
     };
   }
   if (
@@ -955,6 +968,9 @@ export async function researchCorporateLead(db, leadId, env = {}) {
   } else if (openosint.configured && openosint.error) {
     evidence.push(`OpenOSINT: ${openosint.error}`);
   }
+  if (screening.evidence.length > 0) {
+    evidence.push(...screening.evidence.slice(0, 3));
+  }
 
   const now = new Date().toISOString();
   const region = regionCoordinate(lead.city, lead.area);
@@ -1041,6 +1057,14 @@ export async function researchCorporateLead(db, leadId, env = {}) {
         evidence: openosint.evidence || [],
         error: openosint.error || "",
         tools: openosint.tools || [],
+      },
+      screening: {
+        configured: Boolean(screening.configured),
+        status: screening.status || "disabled",
+        matches: screening.matches || [],
+        evidence: screening.evidence || [],
+        error: screening.error || "",
+        checkedAt: screening.checkedAt || "",
       },
     },
   };

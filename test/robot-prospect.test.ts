@@ -10,6 +10,7 @@ import {
 import {
   isLeadPublishable,
   pruneIncompleteRobotCompanies,
+  syncRobotCompanies,
 } from "../src/lib/corporate.ts";
 
 test("Kurir Telegram menolak nama resepsionis, placeholder, dan beberapa nama", () => {
@@ -152,6 +153,97 @@ test("Penulis Prospek memperbarui lead yang sudah ada tanpa duplikat", async () 
   const data = JSON.parse(db.state.payload);
   assert.equal(data.companies.length, 1);
   assert.equal(data.companies[0].contactName, "Budi Santoso");
+});
+
+test("Sinkronisasi robot tidak menimpa koordinat yang sudah dikoreksi", () => {
+  const data = {
+    companies: [
+      {
+        id: "co_robot_1",
+        name: "Hotel Contoh",
+        location: "Jakarta",
+        source: "Corporate Engine · Robot AI",
+        sourceLeadId: "lead-1",
+        latitude: -6.3569892,
+        longitude: 106.7802015,
+        coordinateSource: "Dikonfirmasi manual",
+        coordinateAddress: "Titik yang sudah dicek",
+      },
+    ],
+    quotes: [],
+    locations: ["Jakarta"],
+  };
+  const next = syncRobotCompanies(data as never, [
+    {
+      ...lead,
+      latitude: -6.3563,
+      longitude: 106.7809,
+      coordinateSource: "Panel AI (disetujui Verifier)",
+    } as never,
+  ]);
+  assert.equal(next.companies[0].latitude, -6.3569892);
+  assert.equal(next.companies[0].longitude, 106.7802015);
+  assert.equal(next.companies[0].coordinateSource, "Dikonfirmasi manual");
+  assert.equal(next.companies[0].coordinateAddress, "Titik yang sudah dicek");
+});
+
+test("Sinkronisasi robot tidak memasukkan koordinat yang belum terverifikasi", () => {
+  const data = {
+    companies: [
+      {
+        id: "co_robot_1",
+        name: "Hotel Contoh",
+        location: "Jakarta",
+        source: "Corporate Engine · Robot AI",
+        sourceLeadId: "lead-1",
+      },
+    ],
+    quotes: [],
+    locations: ["Jakarta"],
+  };
+  const next = syncRobotCompanies(data as never, [
+    {
+      ...lead,
+      latitude: -6.3563,
+      longitude: 106.7809,
+      coordinateSource: "Panel AI (disetujui Verifier)",
+    } as never,
+  ]);
+  assert.equal(next.companies[0].latitude, undefined);
+  assert.equal(next.companies[0].longitude, undefined);
+  assert.equal(next.companies[0].coordinateSource, undefined);
+});
+
+test("Penulis Prospek tidak menimpa koordinat yang sudah dikoreksi", async () => {
+  const db = fakeStateDb({
+    companies: [
+      {
+        id: "co_robot_existing",
+        name: "Hotel Contoh",
+        source: "Corporate Engine · Robot AI",
+        sourceLeadId: "lead-1",
+        latitude: -6.3569892,
+        longitude: 106.7802015,
+        coordinateSource: "Dikonfirmasi manual",
+        coordinateAddress: "Titik yang sudah dicek",
+      },
+    ],
+    quotes: [],
+    locations: ["Jakarta"],
+    profile: {},
+  });
+  await publishLeadToProspect(db, "owner-1", {
+    ...lead,
+    latitude: -6.3563,
+    longitude: 106.7809,
+    coordinateSource: "Panel AI (disetujui Verifier)",
+  });
+  const data = JSON.parse(db.state.payload);
+  assert.equal(data.companies.length, 1);
+  assert.equal(data.companies[0].latitude, -6.3569892);
+  assert.equal(data.companies[0].longitude, 106.7802015);
+  assert.equal(data.companies[0].coordinateSource, "Dikonfirmasi manual");
+  assert.equal(data.companies[0].coordinateAddress, "Titik yang sudah dicek");
 });
 
 test("Penulis Prospek tidak menimpa Prospek manual dengan nama sama", async () => {

@@ -185,6 +185,17 @@ export default function CorporateLeadDialog({
             </div>
           ) : null}
 
+          {lead.validationEvidence?.length ? (
+            <div className="lead-agent-trace">
+              <strong>Jejak agen Klarifikasi</strong>
+              <ul>
+                {lead.validationEvidence.slice(0, 8).map((item, index) => (
+                  <li key={`${index}-${item.slice(0, 24)}`}>{item}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
           {lead.validationStatus === "verified" ? (
             <div className="lead-validation-ok">
               <CheckIcon size={15} /> Website, e-mail PIC, telepon PIC, dan koordinat
