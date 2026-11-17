@@ -27,6 +27,7 @@ import {
   regionCoordinate,
   rowToLead,
   sanitizePicName,
+  screeningFieldsForResearch,
 } from "./corporate.js";
 import { collectOpenOsintEvidence } from "./openosint.js";
 import { screenLeadOpenSanctions } from "./opensanctions.js";
@@ -1117,22 +1118,7 @@ export async function researchCorporateLead(db, leadId, env = {}) {
 
   const now = new Date().toISOString();
   const region = regionCoordinate(lead.city, lead.area);
-  const screeningStatus = screening.status || "disabled";
-  const screeningEvidence = [...(screening.evidence || [])]
-    .map((item) => clean(item))
-    .filter(Boolean)
-    .sort()
-    .slice(0, 12);
-  const screeningUnchanged =
-    clean(lead.screeningStatus).toLowerCase() ===
-      screeningStatus.toLowerCase() &&
-    JSON.stringify([...(lead.screeningEvidence || [])].sort()) ===
-      JSON.stringify(screeningEvidence);
-  // Konfirmasi manusia tidak hilang hanya karena API sedang nonaktif/error.
-  // Saat hasil review kembali dengan bukti berbeda, gate tetap membuka ulang.
-  const keepConfirmedReview =
-    Boolean(clean(lead.screeningReviewedAt)) &&
-    (screeningUnchanged || screeningStatus === "disabled" || screeningStatus === "error");
+  const screeningFields = screeningFieldsForResearch(lead, screening);
   const nextLead = {
     ...lead,
     website: website || lead.website,
@@ -1152,17 +1138,8 @@ export async function researchCorporateLead(db, leadId, env = {}) {
     validationEvidence: evidence.slice(0, 12),
     validatedAt: now,
     aiConfidence,
-    screeningStatus,
-    screeningEvidence,
+    ...screeningFields,
     screeningCheckedAt: screening.checkedAt || now,
-    // Konfirmasi dipertahankan hanya bila hasil screening tidak berubah.
-    // Bila bukti berubah, review lama dibatalkan agar manusia meninjau ulang.
-    screeningReviewedAt: keepConfirmedReview
-      ? lead.screeningReviewedAt || ""
-      : "",
-    screeningReviewedBy: keepConfirmedReview
-      ? lead.screeningReviewedBy || ""
-      : "",
   };
 
   await db

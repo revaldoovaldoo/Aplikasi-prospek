@@ -10,7 +10,96 @@ import {
   osmElementCenter,
   resolveLeadCoordinates,
   sanitizePicName,
+  screeningFieldsForRefresh,
+  screeningFieldsForResearch,
 } from "../worker/corporate.js";
+
+test("refresh kota mempertahankan konfirmasi review saat nama entitas sama", () => {
+  const fields = screeningFieldsForRefresh(
+    {
+      name: "Hotel Contoh",
+      screeningStatus: "review",
+      screeningEvidence: ["OpenSanctions PIC: Budi"],
+      screeningCheckedAt: "2026-11-17T01:00:00.000Z",
+      screeningReviewedAt: "2026-11-17T02:00:00.000Z",
+      screeningReviewedBy: "Pane",
+    },
+    { name: "  hotel contoh  " },
+  );
+  assert.equal(fields.screeningStatus, "review");
+  assert.deepEqual(fields.screeningEvidence, ["OpenSanctions PIC: Budi"]);
+  assert.equal(fields.screeningReviewedAt, "2026-11-17T02:00:00.000Z");
+  assert.equal(fields.screeningReviewedBy, "Pane");
+});
+
+test("refresh kota menghapus screening saat nama entitas berubah", () => {
+  const fields = screeningFieldsForRefresh(
+    {
+      name: "Hotel Lama",
+      screeningStatus: "clear",
+      screeningEvidence: ["bukti lama"],
+      screeningCheckedAt: "2026-11-17T01:00:00.000Z",
+      screeningReviewedAt: "2026-11-17T02:00:00.000Z",
+      screeningReviewedBy: "Pane",
+    },
+    { name: "Hotel Baru" },
+  );
+  assert.equal(fields.screeningStatus, "");
+  assert.deepEqual(fields.screeningEvidence, []);
+  assert.equal(fields.screeningCheckedAt, "");
+  assert.equal(fields.screeningReviewedAt, "");
+  assert.equal(fields.screeningReviewedBy, "");
+});
+
+test("API screening error tidak menghapus konfirmasi review", () => {
+  const lead = {
+    screeningStatus: "review",
+    screeningEvidence: ["OpenSanctions PIC: Budi"],
+    screeningReviewedAt: "2026-11-17T02:00:00.000Z",
+    screeningReviewedBy: "Pane",
+  };
+  for (const status of ["error", "disabled"]) {
+    const fields = screeningFieldsForResearch(lead, {
+      status,
+      evidence: [],
+    });
+    assert.equal(fields.screeningStatus, status);
+    assert.equal(fields.screeningReviewedAt, lead.screeningReviewedAt);
+    assert.equal(fields.screeningReviewedBy, "Pane");
+  }
+});
+
+test("hasil screening yang sama mempertahankan konfirmasi meski urutan bukti berubah", () => {
+  const fields = screeningFieldsForResearch(
+    {
+      screeningStatus: "review",
+      screeningEvidence: ["bukti B", "bukti A"],
+      screeningReviewedAt: "2026-11-17T02:00:00.000Z",
+      screeningReviewedBy: "Pane",
+    },
+    { status: "review", evidence: ["bukti A", "bukti B"] },
+  );
+  assert.deepEqual(fields.screeningEvidence, ["bukti A", "bukti B"]);
+  assert.equal(fields.screeningReviewedAt, "2026-11-17T02:00:00.000Z");
+});
+
+test("bukti screening yang berubah membuka ulang review", () => {
+  const fields = screeningFieldsForResearch(
+    {
+      screeningStatus: "clear",
+      screeningEvidence: [],
+      screeningReviewedAt: "2026-11-17T02:00:00.000Z",
+      screeningReviewedBy: "Pane",
+    },
+    {
+      status: "review",
+      evidence: ["OpenSanctions PIC: Nama Baru — skor 1.00"],
+    },
+  );
+  assert.equal(fields.screeningStatus, "review");
+  assert.equal(fields.screeningReviewedAt, "");
+  assert.equal(fields.screeningReviewedBy, "");
+});
 
 test("sanitizePicName membersihkan pecahan JSON yang rusak", () => {
   assert.equal(

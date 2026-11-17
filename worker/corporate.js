@@ -694,6 +694,50 @@ export function screeningReviewRequired(lead = {}) {
 }
 
 /**
+ * Hitung field screening yang aman setelah riset ulang. Konfirmasi manusia
+ * dipertahankan bila hasilnya sama, atau bila API sedang error/nonaktif.
+ * Bukti baru yang berbeda membuka review lagi.
+ */
+export function screeningFieldsForResearch(lead = {}, screening = {}) {
+  const status = clean(screening.status) || "disabled";
+  const evidence = [...(screening.evidence || [])]
+    .map((item) => clean(item))
+    .filter(Boolean)
+    .sort()
+    .slice(0, 12);
+  const unchanged =
+    clean(lead.screeningStatus).toLowerCase() === status.toLowerCase() &&
+    JSON.stringify([...(lead.screeningEvidence || [])].sort()) ===
+      JSON.stringify(evidence);
+  const keepConfirmedReview =
+    Boolean(clean(lead.screeningReviewedAt)) &&
+    (unchanged || status === "disabled" || status === "error");
+  return {
+    screeningStatus: status,
+    screeningEvidence: evidence,
+    screeningReviewedAt: keepConfirmedReview
+      ? lead.screeningReviewedAt || ""
+      : "",
+    screeningReviewedBy: keepConfirmedReview
+      ? lead.screeningReviewedBy || ""
+      : "",
+  };
+}
+
+/** Field screening yang dipertahankan saat refresh kota mengganti baris lead. */
+export function screeningFieldsForRefresh(prior = {}, lead = {}) {
+  const sameEntity =
+    clean(prior.name).toLowerCase() === clean(lead.name).toLowerCase();
+  return {
+    screeningStatus: sameEntity ? prior.screeningStatus || "" : "",
+    screeningEvidence: sameEntity ? prior.screeningEvidence || [] : [],
+    screeningCheckedAt: sameEntity ? prior.screeningCheckedAt || "" : "",
+    screeningReviewedAt: sameEntity ? prior.screeningReviewedAt || "" : "",
+    screeningReviewedBy: sameEntity ? prior.screeningReviewedBy || "" : "",
+  };
+}
+
+/**
  * Data awal dimasukkan sekali ke D1 agar robot email bisa memeriksa seluruh
  * lead, bukan hanya wilayah yang sudah pernah disegarkan.
  */
@@ -2159,7 +2203,7 @@ export async function refreshCorporateCity(db, cityName, seed) {
   ];
   for (const lead of leads) {
     const prior = existing.get(lead.id) || seedById.get(lead.id) || {};
-    const sameEntity = clean(prior.name).toLowerCase() === clean(lead.name).toLowerCase();
+    const screening = screeningFieldsForRefresh(prior, lead);
     statements.push(
       db
         .prepare(
@@ -2200,11 +2244,11 @@ export async function refreshCorporateCity(db, cityName, seed) {
           lead.longitude || 0,
           lead.coordinateAddress || "",
           lead.coordinateSource || "",
-          sameEntity ? prior.screeningStatus || "" : "",
-          JSON.stringify(sameEntity ? prior.screeningEvidence || [] : []),
-          sameEntity ? prior.screeningCheckedAt || "" : "",
-          sameEntity ? prior.screeningReviewedAt || "" : "",
-          sameEntity ? prior.screeningReviewedBy || "" : "",
+          screening.screeningStatus,
+          JSON.stringify(screening.screeningEvidence),
+          screening.screeningCheckedAt,
+          screening.screeningReviewedAt,
+          screening.screeningReviewedBy,
           now,
         ),
     );
