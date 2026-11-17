@@ -488,3 +488,24 @@ test("Prospek robot tidak dibuang hanya karena e-mail/website kosong", () => {
   assert.deepEqual(result.companies.map((company) => company.id), ["co_robot_1"]);
   assert.equal(isLeadPublishable(lead as never), true);
 });
+
+test("lead dengan review OpenSanctions belum dikonfirmasi ditahan dari Prospek", () => {
+  const lead = {
+    name: "Hotel Contoh",
+    contactName: "Budi",
+    phone: "081234567890",
+    screeningStatus: "review",
+  };
+  assert.equal(isLeadPublishable(lead as never), false);
+  assert.equal(
+    isLeadPublishable({
+      ...lead,
+      screeningReviewedAt: "2026-11-17T04:00:00.000Z",
+    } as never),
+    true,
+  );
+  assert.equal(
+    isLeadPublishable({ ...lead, screeningStatus: "clear" } as never),
+    true,
+  );
+});
