@@ -10,6 +10,7 @@ import {
 import {
   isLeadPublishable,
   pruneIncompleteRobotCompanies,
+  scrubRobotCompanyCoordinates,
   syncRobotCompanies,
 } from "../src/lib/corporate.ts";
 
@@ -489,11 +490,35 @@ test("Prospek robot tidak dibuang hanya karena e-mail/website kosong", () => {
   assert.equal(isLeadPublishable(lead as never), true);
 });
 
+test("Prospek robot tidak menyimpan titik pusat wilayah", () => {
+  const data = {
+    companies: [
+      {
+        id: "co_bad",
+        name: "Akademi Contoh",
+        source: "Corporate Engine",
+        sourceLeadId: "osm:node/1",
+        latitude: -6.225,
+        longitude: 106.825,
+        coordinateAddress: "Jakarta",
+        coordinateSource: "OpenStreetMap node",
+      },
+    ],
+  };
+  const cleaned = scrubRobotCompanyCoordinates(data as never);
+  assert.equal(cleaned.companies[0].latitude, 0);
+  assert.equal(cleaned.companies[0].longitude, 0);
+  assert.equal(cleaned.companies[0].coordinateSource, "");
+});
+
 test("lead dengan review OpenSanctions belum dikonfirmasi ditahan dari Prospek", () => {
   const lead = {
     name: "Hotel Contoh",
     contactName: "Budi",
     phone: "081234567890",
+    latitude: -6.2,
+    longitude: 106.8,
+    coordinateSource: "OpenStreetMap node",
     screeningStatus: "review",
   };
   assert.equal(isLeadPublishable(lead as never), false);

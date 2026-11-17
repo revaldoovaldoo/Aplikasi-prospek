@@ -489,14 +489,15 @@ async function geocodeAddress(db, address, entityName) {
  * elemen dari Overpass/OSM dipakai sebagai sumber entity yang eksplisit agar
  * sekolah dan hotel berbentuk area tidak diblokir hanya karena bukan node.
  */
-async function osmEntityCoordinate(db, lead) {
+async function osmEntityCoordinate(db, lead, options = {}) {
   const match = /^osm:(node|way|relation)\/(\d+)$/i.exec(clean(lead.id));
   if (!match) return null;
   const type = match[1].toLowerCase();
   const osmId = match[2];
+  const force = options.force === true;
   const cacheKey = `osm-coordinate:${type}:${osmId}`;
   const cached = await readMeta(db, cacheKey).catch(() => "");
-  if (cached) {
+  if (cached && !force) {
     try {
       const parsed = JSON.parse(cached);
       if (parsed?.lat && parsed?.lon) return parsed;
@@ -507,7 +508,7 @@ async function osmEntityCoordinate(db, lead) {
 
   // Way/relation yang sudah membawa center dari Overpass tidak perlu request
   // ulang; tandai sumbernya secara eksplisit agar lolos gate sebagai entity.
-  if (type !== "node") {
+  if (!force && type !== "node") {
     const storedLat = Number(lead.latitude);
     const storedLon = Number(lead.longitude);
     const storedIsOsm =
@@ -544,7 +545,10 @@ async function osmEntityCoordinate(db, lead) {
     if (
       !center ||
       !validCoordinate(center.lat, center.lon) ||
-      !coordinateCandidateMatchesName(lead.name, tags.name)
+      !coordinateCandidateMatchesName(
+        lead.name,
+        tags.name || tags.operator || tags.brand,
+      )
     ) {
       return null;
     }
@@ -572,6 +576,107 @@ async function osmEntityCoordinate(db, lead) {
   } catch {
     return null;
   }
+}
+
+/**
+ * Perbaiki satu koordinat tanpa menjalankan panel AI. Untuk lead OSM, titik
+ * diambil ulang langsung dari elemen OSM berdasarkan id dan nama entitas.
+ * Fallback geocoder tetap memakai pencocokan nama yang ketat.
+ */
+export async function repairLeadCoordinate(db, leadId, options = {}) {
+  await ensureCorporateSchema(db);
+  const row = await db
+    .prepare(
+      "SELECT id, name, city, area, category, latitude, longitude, coordinate_address, coordinate_source FROM corporate_leads WHERE id = ?",
+    )
+    .bind(leadId)
+    .first()
+    .catch(() => null);
+  if (!row) return { repaired: false, reason: "Lead tidak ditemukan." };
+  const lead = rowToLead(row);
+  if (/^Dikonfirmasi manual\b/i.test(clean(lead.coordinateSource))) {
+    return { repaired: false, reason: "Koordinat sudah dikonfirmasi manual." };
+  }
+
+  let coordinate = await osmEntityCoordinate(db, lead, { force: true });
+  if (!coordinate) {
+    const address =
+      clean(lead.coordinateAddress) ||
+      [clean(lead.area), clean(lead.city)].filter(Boolean).join(", ");
+    coordinate = await geocodeAddress(db, address, lead.name);
+  }
+  if (!coordinate) return { repaired: false, reason: "Titik entitas belum ditemukan." };
+
+  const nextLat = Number(coordinate.lat);
+  const nextLon = Number(coordinate.lon);
+  if (!validCoordinate(nextLat, nextLon)) {
+    return { repaired: false, reason: "Titik entitas tidak valid." };
+  }
+  const nextSource = clean(coordinate.source);
+  const nextAddress = clean(coordinate.displayName) || clean(lead.coordinateAddress);
+  const alreadySame =
+    Number(lead.latitude) === nextLat &&
+    Number(lead.longitude) === nextLon &&
+    clean(lead.coordinateSource) === nextSource;
+  if (alreadySame) {
+    return { repaired: false, reason: "Koordinat sudah benar." };
+  }
+
+  await db
+    .prepare(
+      `UPDATE corporate_leads
+       SET latitude = ?, longitude = ?, coordinate_address = ?, coordinate_source = ?, updated_at = ?
+       WHERE id = ?`,
+    )
+    .bind(nextLat, nextLon, nextAddress, nextSource, new Date().toISOString(), lead.id)
+    .run();
+  return {
+    repaired: true,
+    leadId: lead.id,
+    latitude: nextLat,
+    longitude: nextLon,
+    coordinateSource: nextSource,
+  };
+}
+
+/**
+ * Perbaiki koordinat secara batch. Lead yang masih belum punya titik entitas
+ * tetap ditahan dari Publish/Telegram/Prospek oleh gate yang sama.
+ */
+export async function repairCorporateCoordinates(db, limit = 20) {
+  await ensureCorporateSchema(db);
+  const rows = await db
+    .prepare(
+      "SELECT id, name, city, area, category, latitude, longitude, coordinate_address, coordinate_source FROM corporate_leads ORDER BY RANDOM()",
+    )
+    .all()
+    .catch(() => ({ results: [] }));
+  const leads = (rows.results ?? []).map(rowToLead);
+  const candidates = leads.filter(
+    (lead) =>
+      !coordinateReadyForPublish(lead) &&
+      !/^Dikonfirmasi manual\b/i.test(clean(lead.coordinateSource)),
+  );
+  const batch = candidates.slice(0, Math.max(1, Math.min(50, Number(limit) || 20)));
+  let repaired = 0;
+  for (const lead of batch) {
+    try {
+      const result = await repairLeadCoordinate(db, lead.id);
+      if (result.repaired) repaired += 1;
+    } catch (error) {
+      console.error(
+        "corporate_coordinate_repair_error",
+        lead.id,
+        error instanceof Error ? error.message : "unknown error",
+      );
+    }
+  }
+  return {
+    processed: batch.length,
+    repaired,
+    failed: batch.length - repaired,
+    remaining: Math.max(0, candidates.length - repaired),
+  };
 }
 
 function categoryLabel(category) {

@@ -100,6 +100,23 @@ test("status titik mengikuti sumber koordinat", () => {
     }),
     "review",
   );
+  // Titik pusat bbox bukan titik entitas, meskipun label sumbernya OSM.
+  assert.equal(
+    clientCoordinateReviewStatus({
+      latitude: -6.225,
+      longitude: 106.825,
+      coordinateSource: "OpenStreetMap node",
+    }),
+    "missing",
+  );
+  assert.equal(
+    workerCoordinateReviewStatus({
+      latitude: -6.225,
+      longitude: 106.825,
+      coordinateSource: "OpenStreetMap node",
+    }),
+    "missing",
+  );
 });
 
 test("pusat way/relation OSM diterima sebagai koordinat entity", () => {

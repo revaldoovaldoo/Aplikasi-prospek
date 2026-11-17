@@ -25,7 +25,10 @@ import {
   sanitizePicName,
   screeningReviewRequired,
 } from "./corporate.js";
-import { researchCorporateLead } from "./research.js";
+import {
+  repairCorporateCoordinates,
+  researchCorporateLead,
+} from "./research.js";
 import { openosintConfigured } from "./openosint.js";
 import { opensanctionsConfigured } from "./opensanctions.js";
 import { formatPicPhones, validPicPhone } from "./phone.js";
@@ -2841,6 +2844,7 @@ export async function runCorporateRobot(db, env = {}, options = {}) {
   let whatsappSent = 0;
   let lastError = "";
   let prospectSync = null;
+  let coordinateRepair = null;
   const updated = [];
 
   try {
@@ -2876,6 +2880,15 @@ export async function runCorporateRobot(db, env = {}, options = {}) {
     whatsappSent += whatsappPreflight.sent;
 
     await ensureJobs(db);
+    // Perbaiki titik pusat wilayah yang tersisa secara bertahap. Ini tidak
+    // memakai panel AI dan tidak mengubah status validasi lead.
+    coordinateRepair = await repairCorporateCoordinates(db, 10).catch((error) => {
+      console.error(
+        "corporate_robot_coordinate_repair_error",
+        error instanceof Error ? error.message : "unknown error",
+      );
+      return null;
+    });
     prospectSync = await reconcileTelegramProspects(db, ownerId).catch((error) => {
       console.error(
         "corporate_robot_prospect_reconcile_error",
@@ -2993,6 +3006,7 @@ export async function runCorporateRobot(db, env = {}, options = {}) {
       remaining: Number(remainingRow?.total || 0),
       error: lastError,
       prospectSync,
+      coordinateRepair,
       updated,
       status: await getRobotStatus(db, env, ownerId),
     };

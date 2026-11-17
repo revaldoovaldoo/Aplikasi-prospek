@@ -8,7 +8,10 @@ import {
   readCorporateLeads,
   refreshCorporateCity,
 } from "./corporate.js";
-import { researchCorporateLead } from "./research.js";
+import {
+  repairCorporateCoordinates,
+  researchCorporateLead,
+} from "./research.js";
 import { verifyGithubOidc } from "./github-oidc.js";
 import {
   ensureTelegramWebhook,
@@ -510,6 +513,37 @@ async function handleCorporateLeadEnrich(request, env, auth) {
       error instanceof Error ? error.message : "unknown error",
     );
     return json({ error: "Pencarian kontak belum berhasil. Coba lagi." }, 502);
+  }
+}
+
+async function handleCorporateCoordinateRepair(request, env, auth) {
+  if (request.method !== "POST") {
+    return new Response(null, {
+      status: 405,
+      headers: { Allow: "POST", "Cache-Control": "private, no-store" },
+    });
+  }
+  if (!isSameOriginRequest(request, env.APP_ORIGIN)) {
+    return json({ error: "Forbidden" }, 403);
+  }
+  if (!env.DB) return json({ error: "Database belum tersedia" }, 500);
+  const user = await auth.getUser(request);
+  if (!user) return json({ error: "Sign in required" }, 401);
+  let body = {};
+  try {
+    body = await request.json();
+  } catch {
+    /* limit opsional */
+  }
+  try {
+    const result = await repairCorporateCoordinates(env.DB, body?.limit);
+    return json(result);
+  } catch (error) {
+    console.error(
+      "corporate_coordinate_repair_api_error",
+      error instanceof Error ? error.message : "unknown error",
+    );
+    return json({ error: "Perbaikan koordinat belum berhasil." }, 502);
   }
 }
 
@@ -1021,6 +1055,9 @@ function setup(env) {
       }
       if (url.pathname === "/api/corporate/lead") {
         return handleCorporateLeadEnrich(request, environment, auth);
+      }
+      if (url.pathname === "/api/corporate/coordinates/repair") {
+        return handleCorporateCoordinateRepair(request, environment, auth);
       }
       if (url.pathname === "/api/corporate/prospect/sync") {
         return handleCorporateProspectSync(request, environment, auth);

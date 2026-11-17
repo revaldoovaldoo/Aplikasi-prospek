@@ -33,19 +33,19 @@ function regionNameKey(value?: string): string {
     .trim();
 }
 
-function regionForLocation(city?: string, area?: string): string | null {
+function regionsForLocation(city?: string, area?: string): string[] {
   const target = String(city || "").trim().toLowerCase();
   const areaText = String(area || "").trim().toLowerCase();
   const targetKey = regionNameKey(city);
   const areaKey = regionNameKey(area);
-  return (
-    CORPORATE_CITIES.find((name) => name.toLowerCase() === target) ||
-    CORPORATE_CITIES.find((name) => regionNameKey(name) === targetKey) ||
-    CORPORATE_CITIES.find((name) => regionNameKey(name) === areaKey) ||
-    CORPORATE_CITIES.find((name) => target.includes(name.toLowerCase())) ||
-    CORPORATE_CITIES.find((name) => areaText.includes(name.toLowerCase())) ||
-    null
-  );
+  const regions = [
+    CORPORATE_CITIES.find((name) => name.toLowerCase() === target),
+    CORPORATE_CITIES.find((name) => regionNameKey(name) === targetKey),
+    CORPORATE_CITIES.find((name) => regionNameKey(name) === areaKey),
+    CORPORATE_CITIES.find((name) => target.includes(name.toLowerCase())),
+    CORPORATE_CITIES.find((name) => areaText.includes(name.toLowerCase())),
+  ].filter((name): name is string => Boolean(name));
+  return [...new Set(regions)];
 }
 
 /** Validasi bbox kota/area; null bila wilayah tidak dikenali. */
@@ -56,17 +56,30 @@ export function coordinateInRegion(
   longitude: number,
   padding = 0.08,
 ): boolean | null {
-  const region = regionForLocation(city, area);
-  if (!region) return null;
-  const bounds = CORPORATE_CITY_BOUNDS[region];
-  if (!bounds || !Number.isFinite(latitude) || !Number.isFinite(longitude)) return false;
-  const [south, west, north, east] = bounds;
-  return (
-    latitude >= south - padding &&
-    latitude <= north + padding &&
-    longitude >= west - padding &&
-    longitude <= east + padding
-  );
+  const regions = regionsForLocation(city, area);
+  if (regions.length === 0) return null;
+  return regions.some((region) => {
+    const bounds = CORPORATE_CITY_BOUNDS[region];
+    if (!bounds || !Number.isFinite(latitude) || !Number.isFinite(longitude)) return false;
+    const [south, west, north, east] = bounds;
+    return (
+      latitude >= south - padding &&
+      latitude <= north + padding &&
+      longitude >= west - padding &&
+      longitude <= east + padding
+    );
+  });
+}
+
+function isRegionCenterCoordinate(latitude?: number, longitude?: number): boolean {
+  const lat = Number(latitude);
+  const lon = Number(longitude);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return false;
+  return Object.values(CORPORATE_CITY_BOUNDS).some(([south, west, north, east]) => {
+    const centerLat = (south + north) / 2;
+    const centerLon = (west + east) / 2;
+    return Math.abs(lat - centerLat) < 0.00001 && Math.abs(lon - centerLon) < 0.00001;
+  });
 }
 
 function normalizeCoordinateSource(source?: string, sourceLeadId?: string): string {
@@ -374,6 +387,7 @@ export function coordinateReviewStatus(lead: {
     Math.abs(longitude) <= 180 &&
     (manual || coordinateInRegion(lead.city, lead.area, latitude, longitude) !== false);
   if (!valid || isApproximateCoordinate({ coordinateSource: source })) return "missing";
+  if (!manual && isRegionCenterCoordinate(latitude, longitude)) return "missing";
   return manual ||
     /^(?:OpenStreetMap (?:node|way|relation)\b|Nominatim\/OpenStreetMap \(nama cocok\))/i.test(
       source,
@@ -418,8 +432,45 @@ export function isLeadPublishable(lead: CorporateLead): boolean {
     lead.name?.trim() &&
       lead.contactName?.trim() &&
       lead.phone?.trim() &&
+      coordinateReviewStatus(lead) === "verified" &&
       !screeningReviewRequired(lead),
   );
+}
+
+/**
+ * Jangan pernah menampilkan titik pusat wilayah di Prospek robot. Titik yang
+ * belum lolos gate lebih baik dikosongkan daripada menunjuk lokasi yang salah.
+ */
+export function scrubRobotCompanyCoordinates(data: Database): Database {
+  let changed = false;
+  const companies = data.companies.map((company) => {
+    if (!isRobotCompany(company)) return company;
+    const latitude = Number(company.latitude);
+    const longitude = Number(company.longitude);
+    const hasCoordinate =
+      Number.isFinite(latitude) && latitude !== 0 && Number.isFinite(longitude) && longitude !== 0;
+    if (!hasCoordinate) return company;
+    if (
+      coordinateReviewStatus({
+        id: company.sourceLeadId,
+        city: company.location,
+        latitude,
+        longitude,
+        coordinateSource: company.coordinateSource,
+      }) === "verified"
+    ) {
+      return company;
+    }
+    changed = true;
+    return {
+      ...company,
+      latitude: 0,
+      longitude: 0,
+      coordinateAddress: "",
+      coordinateSource: "",
+    };
+  });
+  return changed ? { ...data, companies } : data;
 }
 
 /** Field Prospek yang bisa diisi dari hasil riset Corporate Engine. */

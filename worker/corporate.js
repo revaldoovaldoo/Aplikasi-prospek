@@ -64,7 +64,15 @@ function regionByName(value) {
 export function regionCoordinate(city, area = "") {
   const cityName = clean(city);
   const areaName = clean(area);
-  const matched = regionByName(cityName) || regionByName(areaName);
+  // Data OSM sering menyimpan kota pencarian (mis. Jakarta) sementara
+  // alamat entitas sebenarnya ada di kota lain (mis. Tangerang). Bila area
+  // menunjuk wilayah yang berbeda, area lebih dekat ke entitas.
+  const cityRegion = regionByName(cityName);
+  const areaRegion = regionByName(areaName);
+  const matched =
+    areaRegion && cityRegion && areaRegion.name !== cityRegion.name
+      ? areaRegion
+      : cityRegion || areaRegion;
   const region = matched || DEFAULT_REGION;
   const coordinate = REGION_COORDINATES.get(region.name);
   const location = [areaName, cityName].filter(Boolean).join(", ");
@@ -85,6 +93,22 @@ export function regionCoordinate(city, area = "") {
 
 export function isRegionCoordinateSource(source) {
   return /^Pusat wilayah\b/i.test(clean(source));
+}
+
+/** Titik pusat bbox wilayah bukan koordinat entitas, apa pun label sumbernya. */
+export function isRegionCenterCoordinate(latitude, longitude) {
+  const lat = Number(latitude);
+  const lon = Number(longitude);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return false;
+  for (const coordinate of REGION_COORDINATES.values()) {
+    if (
+      Math.abs(lat - coordinate.latitude) < 0.00001 &&
+      Math.abs(lon - coordinate.longitude) < 0.00001
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 const NON_ENTITY_COORDINATE_TYPES = new Set([
@@ -235,6 +259,9 @@ export function coordinateReviewStatus(lead = {}) {
     (manual || coordinateInRegion(lead.city, lead.area, latitude, longitude) !== false);
   if (!valid) return "missing";
   if (!manual && isRegionCoordinateSource(source)) return "missing";
+  // Beberapa data lama memberi label OpenStreetMap pada titik pusat wilayah.
+  // Label sumber saja tidak cukup; titik pusat tidak boleh lolos Publish.
+  if (!manual && isRegionCenterCoordinate(latitude, longitude)) return "missing";
   return isVerifiedCoordinateSource(source) ? "verified" : "review";
 }
 
@@ -249,18 +276,22 @@ export function coordinateReadyForPublish(lead = {}) {
  * entitas di pinggir bbox.
  */
 export function coordinateInRegion(city, area, latitude, longitude, padding = 0.08) {
-  const region = regionByName(city) || regionByName(area);
-  if (!region) return null;
+  const regions = [regionByName(city), regionByName(area)].filter(
+    (region, index, list) => region && list.findIndex((item) => item?.name === region.name) === index,
+  );
+  if (regions.length === 0) return null;
   const lat = Number(latitude);
   const lng = Number(longitude);
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) return false;
-  const [south, west, north, east] = region.bbox;
-  return (
-    lat >= south - padding &&
-    lat <= north + padding &&
-    lng >= west - padding &&
-    lng <= east + padding
-  );
+  return regions.some((region) => {
+    const [south, west, north, east] = region.bbox;
+    return (
+      lat >= south - padding &&
+      lat <= north + padding &&
+      lng >= west - padding &&
+      lng <= east + padding
+    );
+  });
 }
 
 /** Koordinat entitas bila ada; jika belum, pusat wilayah lead/default. */
@@ -274,6 +305,7 @@ export function resolveLeadCoordinates(lead = {}) {
   const manual = isManualCoordinateSource(source);
   const exact =
     !isRegionCoordinateSource(source) &&
+    (manual || !isRegionCenterCoordinate(latitude, longitude)) &&
     Number.isFinite(latitude) &&
     Number.isFinite(longitude) &&
     latitude >= -90 &&

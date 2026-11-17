@@ -28,6 +28,7 @@ import {
   isApproximateCoordinate,
   isLeadComplete,
   pruneIncompleteRobotCompanies,
+  scrubRobotCompanyCoordinates,
   syncRobotCompanies,
   type CorporateLead,
 } from "./lib/corporate";
@@ -351,6 +352,7 @@ export default function App() {
           // Sinkronisasi data robot bersifat pelengkap; Prospek tetap bisa dibuka.
         }
         cleaned = pruneIncompleteRobotCompanies(cleaned);
+        cleaned = scrubRobotCompanyCoordinates(cleaned);
         revisionRef.current = snapshot.revision;
         dbRef.current = cleaned;
         conflictRef.current = false;
@@ -768,7 +770,9 @@ export default function App() {
     // Jangan biarkan jalur manual memasukkan lead dengan koordinat perkiraan.
     if (isApproximateCoordinate(lead)) return existing ? existing.id : null;
     if (!manual && !isLeadComplete(lead)) return existing ? existing.id : null;
-    const fields = companyFieldsFromLead(lead, existing ?? undefined);
+    const fields = companyFieldsFromLead(lead, existing ?? undefined, {
+      verifiedCoordinateOnly: true,
+    });
     if (manual) {
       // Tambahan manual tidak boleh ikut dibersihkan oleh prune robot yang
       // hanya menyimpan lead tervalidasi. Tetap tanpa sourceLeadId agar tidak
