@@ -96,6 +96,16 @@ test("kandidat di bawah threshold atau related party diabaikan", () => {
   assert.match(result.evidence[0], /tidak ada kandidat kuat/);
 });
 
+test("query yang ditolak API menjadi error, bukan clear", () => {
+  const result = parseOpenSanctionsResponse(
+    { responses: { person: { status: 400, results: [] } } },
+    { threshold: 0.8 },
+  );
+  assert.equal(result.status, "error");
+  assert.match(result.evidence[0], /HTTP 400/);
+  assert.match(result.error, /PIC/);
+});
+
 test("screening nonaktif tidak melakukan request jaringan", async () => {
   const result = await screenLeadOpenSanctions(
     null,
@@ -155,6 +165,7 @@ test("screening memanggil /match dengan query dan autentikasi yang benar", async
     assert.equal(result.matches[0].query, "person");
     assert.match(received.url, /\/match\/default\?/);
     assert.match(received.url, /topics=sanction/);
+    assert.match(received.url, /algorithm=logic-v2/);
     assert.equal(received.auth, "ApiKey test-key");
     assert.deepEqual(received.body.queries.person.properties.name, ["Budi Santoso"]);
     assert.equal("phone" in received.body.queries.person.properties, false);

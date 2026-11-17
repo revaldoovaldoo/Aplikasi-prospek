@@ -514,9 +514,10 @@ function RobotPanel({
       )}
 
       <p className="robot-note">
-        Struktur 10 agen: 3 Finding memakai website publik gratis dan Exa Search;
-        4 Klarifikasi memakai Exa Scout, Contact Finder, Verifier, serta OpenOSINT pasif
-        untuk DNS/RDAP domain; 3 Publish bekerja terpisah — Kurir Telegram mengirim pesan,
+        Struktur 11 agen: 3 Finding memakai website publik gratis dan Exa Search;
+        5 Klarifikasi memakai Exa Scout, Contact Finder, Verifier, OpenOSINT pasif
+        untuk DNS/RDAP domain, serta OpenSanctions untuk screening sanksi/PEP nama
+        perusahaan/PIC; 3 Publish bekerja terpisah — Kurir Telegram mengirim pesan,
         Agen WhatsApp menghubungi PIC, Penulis Prospek menulis daftar Prospek. Telegram hanya mewajibkan nama PIC dan
         minimal satu nomor PIC valid; hingga dua nomor (kontak perusahaan dan nomor PIC)
         ditampilkan pada baris Nomor PIC. E-mail atau website yang kosong memakai

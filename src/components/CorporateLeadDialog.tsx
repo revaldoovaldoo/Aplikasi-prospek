@@ -189,7 +189,7 @@ export default function CorporateLeadDialog({
             <div className="lead-agent-trace">
               <strong>Jejak agen Klarifikasi</strong>
               <ul>
-                {lead.validationEvidence.slice(0, 8).map((item, index) => (
+                {lead.validationEvidence.map((item, index) => (
                   <li key={`${index}-${item.slice(0, 24)}`}>{item}</li>
                 ))}
               </ul>

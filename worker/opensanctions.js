@@ -99,11 +99,17 @@ export function parseOpenSanctionsResponse(body, options = {}) {
   const responses = body?.responses || {};
   const evidence = [];
   const matches = [];
+  const queryErrors = [];
 
   for (const key of ["company", "person"]) {
     const result = responses[key];
-    if (!result || !Array.isArray(result.results)) continue;
+    if (!result) continue;
     const label = key === "company" ? "perusahaan" : "PIC";
+    if (Number(result.status) >= 400) {
+      queryErrors.push(`${label}: HTTP ${result.status}`);
+      continue;
+    }
+    if (!Array.isArray(result.results)) continue;
     const strong = result.results.filter((candidate) => {
       const score = Number(candidate?.score);
       return (
@@ -127,6 +133,15 @@ export function parseOpenSanctionsResponse(body, options = {}) {
       });
       evidence.push(resultLine(label, candidate));
     }
+  }
+
+  if (matches.length === 0 && queryErrors.length > 0) {
+    return {
+      status: "error",
+      matches: [],
+      evidence: [`OpenSanctions: ${queryErrors.join("; ")}.`],
+      error: queryErrors.join("; "),
+    };
   }
 
   return {
@@ -180,6 +195,8 @@ async function postMatch(env, queries) {
   const url = new URL(`${apiUrl(env)}/match/${encodeURIComponent(dataset(env))}`);
   url.searchParams.set("limit", "3");
   url.searchParams.set("threshold", String(threshold(env)));
+  // Pin algoritma agar skor tidak berubah diam-diam saat default berubah.
+  url.searchParams.set("algorithm", "logic-v2");
   for (const topic of TOPICS) url.searchParams.append("topics", topic);
   const key = clean(env.OPENSANCTIONS_API_KEY);
   const response = await fetch(url.toString(), {
