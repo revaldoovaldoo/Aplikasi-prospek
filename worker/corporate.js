@@ -718,8 +718,8 @@ export function phoneBoundToPic(personName, phone, text) {
   while (match) {
     const index = match.index;
     const matchLength = match[0].length;
-    const windowStart = Math.max(0, index - 220);
-    const windowEnd = Math.min(source.length, index + matchLength + 220);
+    const windowStart = Math.max(0, index - 320);
+    const windowEnd = Math.min(source.length, index + matchLength + 320);
     const window = source.slice(windowStart, windowEnd).toLowerCase();
     const prefix = window
       .slice(0, Math.max(0, index - windowStart))
