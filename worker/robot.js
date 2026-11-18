@@ -3105,6 +3105,18 @@ export async function runCorporateRobot(db, env = {}, options = {}) {
         )
         .bind(now, now, ...selectedLeadIds)
         .run();
+    } else if (selectedLeadIds.length > 0 && options.resendSelected) {
+      const now = nowIso();
+      await db
+        .prepare(
+          `UPDATE corporate_robot_jobs
+           SET stage = 'clarification', status = 'queued', attempts = 0,
+               last_error = '', telegram_sent_at = '', published_at = '',
+               next_run_at = ?, updated_at = ?
+           WHERE lead_id IN (${selectedLeadIds.map(() => "?").join(", ")})`,
+        )
+        .bind(now, now, ...selectedLeadIds)
+        .run();
     }
     const selectedClause =
       selectedLeadIds.length > 0

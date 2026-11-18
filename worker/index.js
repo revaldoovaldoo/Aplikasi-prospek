@@ -702,6 +702,7 @@ async function handleCorporateRobotRun(request, env, auth) {
       limit,
       leadIds,
       restartSelected: body?.restart === true,
+      resendSelected: body?.resend === true,
       force: true,
       source: "manual",
     });
