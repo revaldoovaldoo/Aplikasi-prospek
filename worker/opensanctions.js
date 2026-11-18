@@ -14,6 +14,8 @@ const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const REQUEST_TIMEOUT_MS = 15_000;
 const DEFAULT_THRESHOLD = 0.8;
 const TOPICS = ["sanction", "sanction.linked", "debarment", "role.pep", "role.rca"];
+const QUOTA_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+const QUOTA_KEY = "opensanctions:quota-block";
 
 function clean(value) {
   return typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
@@ -27,6 +29,62 @@ export function opensanctionsConfigured(env = {}) {
 
 function apiUrl(env = {}) {
   return (clean(env.OPENSANCTIONS_API_URL) || DEFAULT_API_URL).replace(/\/+$/, "");
+}
+
+function isQuotaFailure(error) {
+  return Number(error?.status) === 402 || /HTTP 402/.test(String(error?.message || ""));
+}
+
+/**
+ * Cooldown global setelah OpenSanctions menolak karena kuota/billing. Semua
+ * lead berbagi satu API key, jadi retry per lead hanya membuang waktu dan
+ * subrequest. Lead tetap berstatus error dan tertahan gate sampai ditinjau.
+ */
+export async function opensanctionsQuotaCooldown(db) {
+  if (!db) return { blocked: false, until: "" };
+  try {
+    const row = await db
+      .prepare("SELECT value FROM corporate_meta WHERE key = ?")
+      .bind(QUOTA_KEY)
+      .first();
+    if (!row?.value) return { blocked: false, until: "" };
+    const parsed = JSON.parse(row.value);
+    const until = Date.parse(parsed?.until || "");
+    if (Number.isFinite(until) && until > Date.now()) {
+      return { blocked: true, until: new Date(until).toISOString() };
+    }
+    return { blocked: false, until: "" };
+  } catch {
+    return { blocked: false, until: "" };
+  }
+}
+
+async function writeQuotaCooldown(db) {
+  if (!db) return;
+  const now = Date.now();
+  try {
+    await db
+      .prepare(
+        "INSERT INTO corporate_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+      )
+      .bind(
+        QUOTA_KEY,
+        JSON.stringify({
+          until: new Date(now + QUOTA_COOLDOWN_MS).toISOString(),
+          detectedAt: new Date(now).toISOString(),
+        }),
+      )
+      .run();
+  } catch {
+    /* cooldown opsional; kegagalan cache tidak boleh menggagalkan klarifikasi */
+  }
+}
+
+function quotaEvidence(until = "") {
+  const resume = until
+    ? ` Pemeriksaan dicoba lagi setelah ${new Date(until).toLocaleString("id-ID")}.`
+    : " Periksa kuota atau billing API key OpenSanctions.";
+  return `OpenSanctions: kuota/billing API habis (HTTP 402).${resume} Lead ditahan sampai pemeriksaan berhasil atau ditinjau manual.`;
 }
 
 function dataset(env = {}) {
@@ -136,11 +194,15 @@ export function parseOpenSanctionsResponse(body, options = {}) {
   }
 
   if (matches.length === 0 && queryErrors.length > 0) {
+    const quota = queryErrors.some((item) => /HTTP 402/.test(item));
     return {
       status: "error",
       matches: [],
-      evidence: [`OpenSanctions: ${queryErrors.join("; ")}.`],
+      evidence: [
+        quota ? quotaEvidence() : `OpenSanctions: ${queryErrors.join("; ")}.`,
+      ],
       error: queryErrors.join("; "),
+      quota,
     };
   }
 
@@ -210,7 +272,20 @@ async function postMatch(env, queries) {
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
   if (!response.ok) {
-    throw new Error(`OpenSanctions HTTP ${response.status}`);
+    const detail = (await response.text().catch(() => ""))
+      .replace(/<[^>]*>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 240);
+    const quota = response.status === 402;
+    const error = new Error(
+      quota
+        ? `OpenSanctions HTTP 402: kuota/billing API habis${detail ? ` — ${detail}` : ""}`
+        : `OpenSanctions HTTP ${response.status}${detail ? ` — ${detail}` : ""}`,
+    );
+    error.status = response.status;
+    error.quota = quota;
+    throw error;
   }
   return response.json();
 }
@@ -244,27 +319,52 @@ export async function screenLeadOpenSanctions(db, lead = {}, env = {}) {
   const cached = await readCache(db, key);
   if (cached) return { ...cached, configured: true, cached: true, checkedAt: cached.checkedAt || checkedAt };
 
+  const cooldown = await opensanctionsQuotaCooldown(db);
+  if (cooldown.blocked) {
+    return {
+      configured: true,
+      status: "error",
+      matches: [],
+      evidence: [quotaEvidence(cooldown.until)],
+      checkedAt,
+      error: "OpenSanctions HTTP 402: kuota/billing API habis.",
+      quotaBlocked: true,
+    };
+  }
+
   try {
     const body = await postMatch(env, queries);
     const parsed = parseOpenSanctionsResponse(body, { threshold: threshold(env) });
+    if (parsed.status === "error" && parsed.quota) {
+      await writeQuotaCooldown(db);
+    }
     const result = {
       configured: true,
       ...parsed,
       checkedAt,
-      error: "",
+      error: parsed.status === "error" ? parsed.error || "Pemeriksaan gagal." : "",
     };
-    await writeCache(db, key, result);
+    // Jangan cache error: kegagalan API bisa pulih setelah kuota/billing
+    // diperbaiki, dan hasil error lama tidak boleh menahan lead selama TTL.
+    if (parsed.status !== "error") await writeCache(db, key, result);
     return result;
   } catch (error) {
+    const quota = isQuotaFailure(error);
+    if (quota) await writeQuotaCooldown(db);
+    const until = quota ? (await opensanctionsQuotaCooldown(db)).until : "";
+    const message = error instanceof Error ? error.message : "kesalahan tidak diketahui";
     return {
       configured: true,
       status: "error",
       matches: [],
       evidence: [
-        `OpenSanctions: pemeriksaan belum berhasil (${error instanceof Error ? error.message : "kesalahan tidak diketahui"}).`,
+        quota
+          ? quotaEvidence(until)
+          : `OpenSanctions: pemeriksaan belum berhasil (${message}).`,
       ],
       checkedAt,
       error: error instanceof Error ? error.message : "OpenSanctions tidak dapat dihubungi.",
+      quotaBlocked: quota,
     };
   }
 }

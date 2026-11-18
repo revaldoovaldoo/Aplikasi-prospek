@@ -430,18 +430,107 @@ export function isCorporateLeadAddable(
   return manual || isLeadComplete(lead);
 }
 
-/** Screening yang belum clear harus dikonfirmasi manusia sebelum publish. */
+/**
+ * Screening yang belum clear harus dikonfirmasi manusia sebelum publish.
+ * Error kuota (HTTP 402), layanan nonaktif, dan status kosong tidak boleh
+ * dianggap aman; masing-masing butuh tinjauan manual yang tercatat.
+ */
 export function screeningReviewRequired(lead: {
   screeningStatus?: string;
   screeningReviewedAt?: string;
 }): boolean {
   const status = String(lead.screeningStatus || "").trim().toLowerCase();
-  // Error (mis. kuota OpenSanctions HTTP 402) tidak boleh menahan lead
-  // selamanya; lead tetap ditandai error untuk review manusia. Status yang
-  // belum diperiksa/disabled serta review yang belum dikonfirmasi tetap
-  // memblokir publikasi.
-  if (status === "error") return false;
   return status !== "clear" && !String(lead.screeningReviewedAt || "").trim();
+}
+
+export type CorporateScreeningState =
+  | "clear"
+  | "review"
+  | "error"
+  | "disabled"
+  | "unchecked";
+
+export function screeningState(lead: {
+  screeningStatus?: string;
+}): CorporateScreeningState {
+  const status = String(lead.screeningStatus || "").trim().toLowerCase();
+  if (
+    status === "clear" ||
+    status === "review" ||
+    status === "error" ||
+    status === "disabled"
+  ) {
+    return status;
+  }
+  return "unchecked";
+}
+
+/** Error 402 berarti kuota/billing API, bukan lead berisiko. */
+export function screeningQuotaIssue(lead: {
+  screeningStatus?: string;
+  screeningEvidence?: string[];
+}): boolean {
+  if (screeningState(lead) !== "error") return false;
+  const text = (lead.screeningEvidence || []).join(" ").toLowerCase();
+  return text.includes("402") || text.includes("kuota") || text.includes("billing");
+}
+
+/** Label dan warna badge yang membedakan review, error, nonaktif, dan kosong. */
+export function screeningBadgeView(
+  lead: {
+    screeningStatus?: string;
+    screeningReviewedAt?: string;
+    screeningEvidence?: string[];
+  },
+  configured = true,
+): { label: string; tone: string } {
+  const state = screeningState(lead);
+  const reviewed = Boolean(String(lead.screeningReviewedAt || "").trim());
+  if (state === "clear") return { label: "OpenSanctions clear", tone: "clear" };
+  if (state === "review") {
+    return reviewed
+      ? { label: "Review dikonfirmasi", tone: "reviewed" }
+      : { label: "OpenSanctions review", tone: "review" };
+  }
+  if (state === "error") {
+    return reviewed
+      ? { label: "Error · ditinjau", tone: "reviewed" }
+      : {
+          label: screeningQuotaIssue(lead)
+            ? "OpenSanctions kuota 402"
+            : "OpenSanctions error",
+          tone: "error",
+        };
+  }
+  if (state === "disabled") {
+    return reviewed
+      ? { label: "Nonaktif · ditinjau", tone: "reviewed" }
+      : { label: "OpenSanctions belum aktif", tone: "disabled" };
+  }
+  if (reviewed) return { label: "Belum diperiksa · ditinjau", tone: "reviewed" };
+  return configured
+    ? { label: "Screening belum diperiksa", tone: "pending" }
+    : { label: "OpenSanctions belum aktif", tone: "disabled" };
+}
+
+/** Alasan penahanan yang sesuai status; dipakai dialog dan notifikasi. */
+export function screeningHoldMessage(lead: {
+  screeningStatus?: string;
+  screeningEvidence?: string[];
+}): string {
+  const state = screeningState(lead);
+  if (state === "review") {
+    return "Lead ditahan dari Publish dan Prospek sampai hasil screening berisiko ini dikonfirmasi.";
+  }
+  if (state === "error") {
+    return screeningQuotaIssue(lead)
+      ? "Pemeriksaan OpenSanctions gagal karena kuota/billing API (HTTP 402). Lead ditahan; periksa kuota atau billing, lalu tinjau ulang."
+      : "Pemeriksaan OpenSanctions gagal. Lead ditahan sampai pemeriksaan berhasil atau ditinjau manual.";
+  }
+  if (state === "disabled") {
+    return "OpenSanctions belum aktif, jadi belum ada hasil screening. Lead ditahan sampai layanan aktif atau ditinjau manual.";
+  }
+  return "Screening OpenSanctions belum dijalankan. Lead ditahan sampai diperiksa atau ditinjau manual.";
 }
 
 /** Lead yang sudah memenuhi syarat Telegram boleh disinkronkan ke Prospek. */
@@ -583,8 +672,15 @@ export function syncRobotCompanies(
   // Screening yang belum dikonfirmasi juga berlaku surut untuk record robot
   // lama. Record yang sudah punya penawaran dipertahankan agar dokumen bisnis
   // tidak hilang; record robot tanpa penawaran tidak boleh tetap di Prospek.
+  // Error operasional (mis. kuota 402) tidak menghapus record lama: gate
+  // publish tetap menahan lead, tetapi kegagalan billing bukan temuan risiko.
   const blockedLeadIds = new Set(
-    leads.filter(screeningReviewRequired).map((lead) => lead.id),
+    leads
+      .filter(
+        (lead) =>
+          screeningReviewRequired(lead) && screeningState(lead) !== "error",
+      )
+      .map((lead) => lead.id),
   );
   const quotedCompanyIds = new Set(
     (data.quotes || [])

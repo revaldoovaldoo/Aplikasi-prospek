@@ -1,7 +1,10 @@
 import {
   coordinateReviewStatus,
   isApproximateCoordinate,
+  screeningHoldMessage,
+  screeningQuotaIssue,
   screeningReviewRequired,
+  screeningState,
   websiteHost,
   type CorporateLead,
 } from "../lib/corporate";
@@ -44,6 +47,23 @@ export default function CorporateLeadDialog({
   const coordinateStatus = lead ? coordinateReviewStatus(lead) : "missing";
   const screeningPending = Boolean(lead && screeningReviewRequired(lead));
   const screeningReviewed = Boolean(lead?.screeningReviewedAt);
+  const screeningStateValue = lead ? screeningState(lead) : "unchecked";
+  const screeningQuota = Boolean(lead && screeningQuotaIssue(lead));
+  const screeningTitle =
+    screeningStateValue === "review"
+      ? "OpenSanctions · Review"
+      : screeningStateValue === "error"
+        ? "OpenSanctions · Error"
+        : screeningStateValue === "disabled"
+          ? "OpenSanctions · Belum aktif"
+          : "OpenSanctions · Belum diperiksa";
+  const screeningActionLabel = screeningBusy
+    ? "Menyimpan…"
+    : screeningPending
+      ? screeningStateValue === "review"
+        ? "Konfirmasi & lanjutkan"
+        : "Konfirmasi tinjauan manual"
+      : "Buka kembali penahanan";
 
   return (
     <Modal
@@ -70,7 +90,7 @@ export default function CorporateLeadDialog({
               }
               title={
                 screeningPending
-                  ? "Konfirmasi review OpenSanctions terlebih dahulu sebelum lead masuk Prospek."
+                  ? screeningHoldMessage(lead)
                   : approximateCoordinate
                     ? "Koordinat masih perkiraan wilayah. Lead belum bisa masuk Prospek sampai koordinat entitas tervalidasi."
                     : "Masukkan perusahaan ini ke Prospek meskipun informasinya belum lengkap"
@@ -207,25 +227,31 @@ export default function CorporateLeadDialog({
             </div>
           ) : null}
 
-          {lead.screeningStatus === "review" ? (
+          {lead && screeningStateValue !== "clear" ? (
             <div
-              className={`lead-screening-review ${
+              className={`lead-screening-review ${screeningStateValue} ${
                 screeningPending ? "pending" : "resolved"
               }`}
             >
               <div className="lead-screening-head">
-                <strong>OpenSanctions · Review</strong>
-                <span>{screeningReviewed ? "Sudah dikonfirmasi" : "Perlu konfirmasi"}</span>
+                <strong>{screeningTitle}</strong>
+                <span>{screeningReviewed ? "Ditinjau manual" : "Ditahan"}</span>
               </div>
               <p>
                 {screeningPending
-                  ? "Lead ditahan dari Publish dan Prospek sampai hasil screening berisiko ini dikonfirmasi."
-                  : `Review sudah dikonfirmasi${
+                  ? screeningHoldMessage(lead)
+                  : `Tinjauan manual sudah dicatat${
                       lead.screeningReviewedAt
                         ? ` pada ${new Date(lead.screeningReviewedAt).toLocaleString("id-ID")}`
                         : ""
-                    }.`}
+                    }. Hasil screening tetap disimpan sebagai "${screeningStateValue}".`}
               </p>
+              {screeningPending && screeningQuota ? (
+                <p>
+                  Periksa kuota atau billing API key OpenSanctions. Robot tidak
+                  mengulang request selama masa cooldown agar tidak membuang kuota.
+                </p>
+              ) : null}
               {lead.screeningEvidence?.length ? (
                 <ul>
                   {lead.screeningEvidence.slice(0, 5).map((item, index) => (
@@ -240,12 +266,12 @@ export default function CorporateLeadDialog({
                   disabled={screeningBusy}
                   onClick={() => onScreeningReview(screeningPending)}
                 >
-                  {screeningBusy
-                    ? "Menyimpan…"
-                    : screeningPending
-                      ? "Konfirmasi & hapus flag review"
-                      : "Buka kembali flag review"}
+                  {screeningActionLabel}
                 </button>
+              ) : screeningPending ? (
+                <p className="lead-screening-hint">
+                  Konfirmasi tinjauan tersedia di Robot AI.
+                </p>
               ) : null}
             </div>
           ) : null}

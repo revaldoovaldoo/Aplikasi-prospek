@@ -4568,9 +4568,26 @@ a {
   font-size: 11px;
 }
 
+.lead-screening-review.error {
+  border-color: #f3c9c9;
+  background: var(--red-soft);
+}
+
+.lead-screening-review.disabled,
+.lead-screening-review.unchecked {
+  border-color: var(--line);
+  background: #f7f8fa;
+}
+
 .lead-screening-review.resolved {
   border-color: #c9ebda;
   background: var(--green-soft);
+}
+
+.lead-screening-hint {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 10px;
 }
 
 .lead-screening-head {

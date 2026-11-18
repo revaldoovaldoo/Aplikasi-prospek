@@ -24,6 +24,7 @@ import {
   rowToLead,
   isPicRole,
   sanitizePicName,
+  screeningHoldReason,
   screeningReviewRequired,
 } from "./corporate.js";
 import {
@@ -33,6 +34,7 @@ import {
 import { openosintConfigured } from "./openosint.js";
 import {
   opensanctionsConfigured,
+  opensanctionsQuotaCooldown,
   screenLeadOpenSanctions,
 } from "./opensanctions.js";
 import { formatPicPhones, validPicPhone } from "./phone.js";
@@ -2143,8 +2145,7 @@ async function advanceJob(db, row, env, settings, ownerId) {
           contact_confidence: contactConfidence,
           contact_evidence: JSON.stringify(contactEvidence),
           attempts,
-          last_error:
-            "OpenSanctions menemukan kandidat berisiko. Konfirmasi manual di Robot AI diperlukan sebelum Publish.",
+          last_error: screeningHoldReason(lead),
           next_run_at: addDays(1),
         });
         return {
@@ -2235,8 +2236,7 @@ async function advanceJob(db, row, env, settings, ownerId) {
           contact_confidence: contactConfidence,
           contact_evidence: JSON.stringify(contactEvidence),
           attempts,
-          last_error:
-            "OpenSanctions menemukan kandidat berisiko. Konfirmasi manual di Robot AI diperlukan sebelum Publish.",
+          last_error: screeningHoldReason(lead),
           next_run_at: addDays(1),
         });
         return {
@@ -2324,8 +2324,7 @@ async function advanceJob(db, row, env, settings, ownerId) {
           contact_confidence: contactConfidence,
           contact_evidence: JSON.stringify(contactEvidence),
           attempts,
-          last_error:
-            "OpenSanctions menemukan kandidat berisiko. Konfirmasi manual di Robot AI diperlukan sebelum Publish.",
+          last_error: screeningHoldReason(lead),
           next_run_at: addDays(1),
         });
         return {
@@ -2556,6 +2555,22 @@ export async function backfillCorporateScreening(db, env = {}, limit = 5) {
     };
   }
   await ensureCorporateSchema(db);
+  const cooldown = await opensanctionsQuotaCooldown(db);
+  if (cooldown.blocked) {
+    const remainingRow = await db
+      .prepare(
+        "SELECT COUNT(*) AS total FROM corporate_leads WHERE screening_status = '' AND screening_reviewed_at = ''",
+      )
+      .first()
+      .catch(() => null);
+    return {
+      skipped: true,
+      checked: 0,
+      review: 0,
+      remaining: Number(remainingRow?.total || 0),
+      reason: `OpenSanctions kuota/billing habis (HTTP 402); backfill ditunda sampai ${cooldown.until}.`,
+    };
+  }
   const size = Math.max(1, Math.min(25, Number(limit) || 5));
   const rows = await db
     .prepare(
@@ -2662,12 +2677,15 @@ export async function reviewCorporateScreening(
     .bind(leadId)
     .first();
   if (!row) return { ok: false, message: "Lead tidak ditemukan." };
-  if (row.screening_status !== "review") {
+  if (row.screening_status === "clear") {
     return {
       ok: false,
-      message: "Lead ini tidak sedang menunggu review OpenSanctions.",
+      message: "Lead ini sudah lolos screening OpenSanctions.",
     };
   }
+  // Review, error kuota, layanan nonaktif, dan status yang belum diperiksa
+  // sama-sama ditahan gate. Manusia boleh mengonfirmasi tinjauan manual untuk
+  // melepas penahanan; hasil screening tetap disimpan apa adanya.
   const now = nowIso();
   if (reviewed) {
     await db
@@ -2691,7 +2709,10 @@ export async function reviewCorporateScreening(
       ok: true,
       reviewed: true,
       reviewedAt: now,
-      message: "Review OpenSanctions dikonfirmasi. Lead dilanjutkan ke Publish.",
+      message:
+        row.screening_status === "review"
+          ? "Review OpenSanctions dikonfirmasi. Lead dilanjutkan ke Publish."
+          : "Tinjauan manual screening dikonfirmasi. Lead dilanjutkan ke Publish.",
     };
   }
   await db
@@ -2710,7 +2731,7 @@ export async function reviewCorporateScreening(
        WHERE lead_id = ?`,
     )
     .bind(
-      "Review OpenSanctions dibuka kembali. Konfirmasi manual diperlukan sebelum Publish.",
+      "Tinjauan manual screening dibuka kembali. Konfirmasi diperlukan sebelum Publish.",
       addDays(1),
       now,
       leadId,
@@ -2720,7 +2741,7 @@ export async function reviewCorporateScreening(
     ok: true,
     reviewed: false,
     reviewedAt: "",
-    message: "Flag review OpenSanctions dipasang kembali.",
+    message: "Penahanan screening dipasang kembali.",
   };
 }
 

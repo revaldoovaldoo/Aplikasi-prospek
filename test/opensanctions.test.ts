@@ -117,6 +117,75 @@ test("screening nonaktif tidak melakukan request jaringan", async () => {
   assert.deepEqual(result.evidence, []);
 });
 
+test("HTTP 402 memakai cooldown global dan tidak diulang per lead", async () => {
+  let requests = 0;
+  const server = http.createServer((request, response) => {
+    requests += 1;
+    request.resume();
+    request.on("end", () => {
+      response.writeHead(402, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ error: "Payment required" }));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  const port = typeof address === "object" && address ? address.port : 0;
+  const meta = new Map<string, string>();
+  const db = {
+    prepare(sql: string) {
+      if (/SELECT value FROM corporate_meta/.test(sql)) {
+        return {
+          bind: (key: string) => ({
+            first: async () => (meta.has(key) ? { value: meta.get(key) } : null),
+          }),
+        };
+      }
+      if (/INSERT INTO corporate_meta/.test(sql)) {
+        return {
+          bind: (key: string, value: string) => ({
+            run: async () => {
+              meta.set(key, value);
+              return { meta: { changes: 1 } };
+            },
+          }),
+        };
+      }
+      const chain = {
+        bind: () => chain,
+        run: async () => ({ meta: { changes: 0 } }),
+        first: async () => null,
+      };
+      return chain;
+    },
+  };
+  const env = {
+    OPENSANCTIONS_API_URL: `http://127.0.0.1:${port}`,
+    OPENSANCTIONS_API_KEY: "test-key",
+  };
+  try {
+    const first = await screenLeadOpenSanctions(
+      db as never,
+      { name: "PT Contoh", contactName: "Budi Santoso" },
+      env,
+    );
+    assert.equal(first.status, "error");
+    assert.match(first.evidence[0], /402|kuota|billing/i);
+    assert.match(first.error, /402/);
+
+    const second = await screenLeadOpenSanctions(
+      db as never,
+      { name: "PT Lain", contactName: "Siti Aminah" },
+      env,
+    );
+    assert.equal(second.status, "error");
+    assert.equal(second.quotaBlocked, true);
+    assert.match(second.evidence[0], /ditunda|kuota|billing/i);
+    assert.equal(requests, 1, "request 402 tidak boleh diulang selama cooldown");
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test("screening memanggil /match dengan query dan autentikasi yang benar", async () => {
   let received = null;
   const server = http.createServer((request, response) => {

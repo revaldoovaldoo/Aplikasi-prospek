@@ -8,17 +8,20 @@ import {
   findingSearchQueries,
   publishLeadToProspect,
   reconcileTelegramProspects,
+  reviewCorporateScreening,
   runFindingQualifierAgent,
 } from "../worker/robot.js";
 import {
   hasBoundPicPhoneEvidence,
   phoneBoundToPic,
+  screeningHoldReason,
 } from "../worker/corporate.js";
 import {
   isCorporateLeadAddable,
   isLeadPublishable,
   pruneIncompleteRobotCompanies,
   scrubRobotCompanyCoordinates,
+  screeningBadgeView,
   syncRobotCompanies,
 } from "../src/lib/corporate.ts";
 
@@ -651,6 +654,47 @@ test("sinkronisasi menghapus Prospek robot yang review screening-nya belum dikon
   assert.deepEqual(next.companies, []);
 });
 
+test("error kuota tidak menghapus Prospek lama tetapi tetap menahan publish", () => {
+  const data = {
+    companies: [
+      {
+        id: "co_error",
+        name: "Hotel Error",
+        source: "Corporate Engine",
+        sourceLeadId: "lead-error",
+      },
+    ],
+    quotes: [],
+    locations: ["Jakarta"],
+  };
+  const next = syncRobotCompanies(data as never, [
+    {
+      id: "lead-error",
+      name: "Hotel Error",
+      contactName: "Budi",
+      phone: "081234567890",
+      latitude: -6.2,
+      longitude: 106.8,
+      coordinateSource: "OpenStreetMap node",
+      screeningStatus: "error",
+      screeningEvidence: ["OpenSanctions: kuota/billing API habis (HTTP 402)."],
+    } as never,
+  ]);
+  assert.deepEqual(next.companies.map((company) => company.id), ["co_error"]);
+  assert.equal(
+    isLeadPublishable({
+      name: "Hotel Error",
+      contactName: "Budi",
+      phone: "081234567890",
+      latitude: -6.2,
+      longitude: 106.8,
+      coordinateSource: "OpenStreetMap node",
+      screeningStatus: "error",
+    } as never),
+    false,
+  );
+});
+
 test("review OpenSanctions yang belum dikonfirmasi menahan tombol manual Corporate", () => {
   const lead = {
     id: "osm:node/1",
@@ -697,7 +741,7 @@ test("Prospek robot tidak menyimpan titik pusat wilayah", () => {
   assert.equal(cleaned.companies[0].coordinateSource, "");
 });
 
-test("screening error tidak menahan publish; status yang belum diperiksa tetap menahan", () => {
+test("screening error, disabled, dan belum diperiksa menahan sampai ditinjau", () => {
   const lead = {
     name: "Hotel Contoh",
     contactName: "Budi",
@@ -706,16 +750,7 @@ test("screening error tidak menahan publish; status yang belum diperiksa tetap m
     longitude: 106.8,
     coordinateSource: "OpenStreetMap node",
   };
-  assert.equal(
-    isLeadPublishable({ ...lead, screeningStatus: "error" } as never),
-    true,
-    "error kuota harus tetap bisa diproses dan ditandai untuk review",
-  );
-  assert.equal(
-    isCorporateLeadAddable({ ...lead, screeningStatus: "error" } as never, true),
-    true,
-  );
-  for (const screeningStatus of ["disabled", ""]) {
+  for (const screeningStatus of ["error", "disabled", ""]) {
     assert.equal(
       isLeadPublishable({ ...lead, screeningStatus } as never),
       false,
@@ -726,7 +761,120 @@ test("screening error tidak menahan publish; status yang belum diperiksa tetap m
       false,
       `manual ${screeningStatus || "kosong"} harus tertahan`,
     );
+    assert.equal(
+      isLeadPublishable({
+        ...lead,
+        screeningStatus,
+        screeningReviewedAt: "2026-11-18T05:00:00.000Z",
+      } as never),
+      true,
+      `status ${screeningStatus || "kosong"} boleh lanjut setelah ditinjau`,
+    );
   }
+});
+
+test("alasan penahanan membedakan risiko, kuota 402, nonaktif, dan belum diperiksa", () => {
+  assert.match(
+    screeningHoldReason({ screeningStatus: "review" }),
+    /kandidat berisiko/,
+  );
+  assert.match(
+    screeningHoldReason({
+      screeningStatus: "error",
+      screeningEvidence: ["OpenSanctions: kuota/billing API habis (HTTP 402)."],
+    }),
+    /kuota\/billing/,
+  );
+  assert.match(
+    screeningHoldReason({ screeningStatus: "disabled" }),
+    /belum aktif/,
+  );
+  assert.match(
+    screeningHoldReason({ screeningStatus: "" }),
+    /belum dijalankan/,
+  );
+});
+
+test("badge screening membedakan review, error kuota, nonaktif, dan belum diperiksa", () => {
+  assert.equal(screeningBadgeView({ screeningStatus: "review" }).label, "OpenSanctions review");
+  assert.equal(screeningBadgeView({ screeningStatus: "error" }).label, "OpenSanctions error");
+  assert.equal(
+    screeningBadgeView({
+      screeningStatus: "error",
+      screeningEvidence: ["OpenSanctions: kuota/billing API habis (HTTP 402)."],
+    }).label,
+    "OpenSanctions kuota 402",
+  );
+  assert.equal(
+    screeningBadgeView({ screeningStatus: "disabled" }).label,
+    "OpenSanctions belum aktif",
+  );
+  assert.equal(
+    screeningBadgeView({ screeningStatus: "" }).label,
+    "Screening belum diperiksa",
+  );
+  assert.equal(
+    screeningBadgeView(
+      { screeningStatus: "error", screeningReviewedAt: "2026-11-18T05:00:00.000Z" },
+    ).label,
+    "Error · ditinjau",
+  );
+});
+
+test("tinjauan manual dapat melepas penahanan error 402 tanpa mengubah status screening", async () => {
+  const updates: string[] = [];
+  const db = {
+    batch: async () => undefined,
+    prepare(sql: string) {
+      if (/SELECT id, screening_status FROM corporate_leads/.test(sql)) {
+        return {
+          bind: () => ({
+            first: async () => ({ id: "lead-error", screening_status: "error" }),
+          }),
+        };
+      }
+      if (/UPDATE corporate_leads/.test(sql)) {
+        return {
+          bind: () => ({
+            run: async () => {
+              updates.push(sql);
+              return { meta: { changes: 1 } };
+            },
+          }),
+        };
+      }
+      if (/UPDATE corporate_robot_jobs/.test(sql)) {
+        return {
+          bind: () => ({
+            run: async () => {
+              updates.push(sql);
+              return { meta: { changes: 1 } };
+            },
+          }),
+        };
+      }
+      const chain = {
+        bind: () => chain,
+        run: async () => ({ meta: { changes: 1 } }),
+        all: async () => ({ results: [] }),
+        first: async () => null,
+      };
+      return chain;
+    },
+  };
+  const result = await reviewCorporateScreening(
+    db as never,
+    "owner-1",
+    "lead-error",
+    true,
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.reviewed, true);
+  assert.match(result.message, /Tinjauan manual/);
+  assert.equal(
+    updates.some((sql) => /screening_reviewed_at = \?/.test(sql)),
+    true,
+  );
 });
 
 test("publish Prospek menolak screening disabled/kosong tanpa konfirmasi", async () => {

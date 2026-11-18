@@ -3,7 +3,10 @@ import type { Company } from "../types";
 import {
   categoryLabel,
   findCompanyForLead,
+  screeningBadgeView,
+  screeningHoldMessage,
   screeningReviewRequired,
+  screeningState,
   type CorporateLead,
   type CorporateRobotJob,
   type CorporateRobotStatus,
@@ -43,28 +46,17 @@ function robotStageLabel(stage: string): string {
 }
 
 function robotContactLabel(job: CorporateRobotJob): string {
-  if (job.status === "screening_review") return "Review OpenSanctions";
+  if (job.status === "screening_review") {
+    const state = screeningState(job.lead);
+    if (state === "error") return "Screening error";
+    if (state === "disabled") return "Screening nonaktif";
+    if (state === "unchecked") return "Screening belum diperiksa";
+    return "Review OpenSanctions";
+  }
   if (job.contactStatus === "verified") return "Terverifikasi publik";
   if (job.contactStatus === "partial") return "Perlu dicek";
   if (job.contactStatus === "missing") return "Belum ada kontak";
   return robotStageLabel(job.stage);
-}
-
-function screeningBadge(
-  lead: CorporateLead,
-  configured: boolean,
-): { label: string; tone: string } {
-  if (!configured) return { label: "OpenSanctions belum aktif", tone: "disabled" };
-  if (screeningReviewRequired(lead)) return { label: "OpenSanctions review", tone: "review" };
-  if (lead.screeningStatus === "review" && lead.screeningReviewedAt) {
-    return { label: "Review dikonfirmasi", tone: "reviewed" };
-  }
-  if (lead.screeningStatus === "clear") return { label: "OpenSanctions clear", tone: "clear" };
-  if (lead.screeningStatus === "error") return { label: "OpenSanctions error", tone: "error" };
-  if (lead.screeningStatus === "disabled") {
-    return { label: "OpenSanctions belum aktif", tone: "disabled" };
-  }
-  return { label: "Screening belum diperiksa", tone: "pending" };
 }
 
 function errorMessage(error: unknown): string {
@@ -81,7 +73,7 @@ function RobotJobRow({
   opensanctionsConfigured: boolean;
 }) {
   const lead = job.lead;
-  const screening = screeningBadge(lead, opensanctionsConfigured);
+  const screening = screeningBadgeView(lead, opensanctionsConfigured);
   return (
     <button
       type="button"
@@ -778,7 +770,7 @@ export default function RobotPage({
           ? `${selected.name} diperbarui di Prospek.`
           : `${selected.name} masuk ke daftar Prospek.`
         : screeningReviewRequired(selected)
-          ? `${selected.name} menunggu konfirmasi review OpenSanctions; Prospek tidak diubah.`
+          ? `${selected.name}: ${screeningHoldMessage(selected)} Prospek tidak diubah.`
           : `${selected.name} gagal masuk Prospek. Coba lagi.`,
     );
     setSelected(null);

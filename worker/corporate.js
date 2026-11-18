@@ -776,15 +776,35 @@ export function hasBoundPicPhoneEvidence(lead = {}) {
   );
 }
 
-/** Hasil OpenSanctions berisiko tinggi harus dikonfirmasi manusia. */
+/**
+ * Semua status selain clear harus ditinjau manusia sebelum publish. Ini
+ * mencakup review berisiko, error kuota (HTTP 402), layanan nonaktif, dan lead
+ * yang belum pernah diperiksa. Konfirmasi manusia dicatat terpisah agar hasil
+ * screening tidak dipalsukan menjadi clear.
+ */
 export function screeningReviewRequired(lead = {}) {
   const status = clean(lead.screeningStatus).toLowerCase();
-  // Error (mis. kuota OpenSanctions HTTP 402) tidak boleh menahan lead
-  // selamanya; lead tetap ditandai error untuk review manusia. Status yang
-  // belum diperiksa/disabled serta review yang belum dikonfirmasi tetap
-  // memblokir publikasi.
-  if (status === "error") return false;
   return status !== "clear" && !clean(lead.screeningReviewedAt);
+}
+
+/** Alasan penahanan yang sesuai status, bukan selalu "kandidat berisiko". */
+export function screeningHoldReason(lead = {}) {
+  const status = clean(lead.screeningStatus).toLowerCase();
+  const evidence = (Array.isArray(lead.screeningEvidence) ? lead.screeningEvidence : [])
+    .join(" ")
+    .toLowerCase();
+  if (status === "review") {
+    return "OpenSanctions menemukan kandidat berisiko. Konfirmasi manual di Robot AI diperlukan sebelum Publish.";
+  }
+  if (status === "error") {
+    return /402|kuota|billing/.test(evidence)
+      ? "Pemeriksaan OpenSanctions gagal karena kuota/billing API (HTTP 402). Lead ditahan; periksa kuota atau billing, lalu tinjau manual di Robot AI."
+      : "Pemeriksaan OpenSanctions gagal. Lead ditahan sampai pemeriksaan berhasil atau ditinjau manual di Robot AI.";
+  }
+  if (status === "disabled") {
+    return "OpenSanctions belum aktif, jadi belum ada hasil screening. Lead ditahan sampai layanan aktif atau ditinjau manual di Robot AI.";
+  }
+  return "Screening OpenSanctions belum dijalankan. Lead ditahan sampai diperiksa atau ditinjau manual di Robot AI.";
 }
 
 /**
@@ -803,6 +823,9 @@ export function screeningFieldsForResearch(lead = {}, screening = {}) {
     clean(lead.screeningStatus).toLowerCase() === status.toLowerCase() &&
     JSON.stringify([...(lead.screeningEvidence || [])].sort()) ===
       JSON.stringify(evidence);
+  // Konfirmasi manusia hanya dipertahankan bila hasil baru sama, atau bila
+  // pemeriksaan tidak mungkin memberi hasil baru (API nonaktif/error). Hasil
+  // review/clear yang berbeda membuka penahanan lagi.
   const keepConfirmedReview =
     Boolean(clean(lead.screeningReviewedAt)) &&
     (unchanged || status === "disabled" || status === "error");
