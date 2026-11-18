@@ -3117,6 +3117,18 @@ export async function runCorporateRobot(db, env = {}, options = {}) {
         )
         .bind(now, now, ...selectedLeadIds)
         .run();
+      // Outbox idempoten menyimpan status sent. Untuk resend yang diminta
+      // eksplisit, buka kembali baris lead yang dipilih agar pesan baru bisa
+      // dikirim tanpa menghapus riwayat outbox.
+      await db
+        .prepare(
+          `UPDATE corporate_telegram_outbox
+           SET status = 'pending', sent_at = '', telegram_message_id = '',
+               claimed_at = '', next_attempt_at = '', last_error = '', updated_at = ?
+           WHERE lead_id IN (${selectedLeadIds.map(() => "?").join(", ")})`,
+        )
+        .bind(now, ...selectedLeadIds)
+        .run();
     }
     const selectedClause =
       selectedLeadIds.length > 0
