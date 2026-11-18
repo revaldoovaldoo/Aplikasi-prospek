@@ -466,9 +466,22 @@ const SCHEMA_SQL = [
 
 let schemaPromise;
 
+// Naikkan bila SCHEMA_SQL/kolom berubah. Penanda ini mencegah ~25 pernyataan
+// DDL dijalankan ulang setiap isolate dingin, karena setiap pernyataan DDL
+// ikut dihitung sebagai penulisan database harian.
+const SCHEMA_VERSION = "4";
+
 export async function ensureCorporateSchema(db) {
   if (!schemaPromise) {
     schemaPromise = (async () => {
+      try {
+        const marker = await db
+          .prepare("SELECT value FROM corporate_meta WHERE key = 'schema_version'")
+          .first();
+        if (marker?.value === SCHEMA_VERSION) return;
+      } catch {
+        /* tabel corporate_meta belum ada */
+      }
       for (const sql of SCHEMA_SQL) {
         await db.prepare(sql).run();
       }
@@ -515,6 +528,16 @@ export async function ensureCorporateSchema(db) {
           .run();
       } catch {
         /* kolom sudah ada */
+      }
+      try {
+        await db
+          .prepare(
+            "INSERT INTO corporate_meta (key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+          )
+          .bind(SCHEMA_VERSION)
+          .run();
+      } catch {
+        /* penanda opsional: skema sudah siap walau penanda gagal ditulis */
       }
     })().catch((error) => {
       schemaPromise = undefined;
@@ -2627,6 +2650,56 @@ export function refreshCacheReusable(
   return Number.isFinite(ageMs) && ageMs >= 0 && ageMs < minMs;
 }
 
+/**
+ * Putuskan baris mana yang benar-benar perlu ditulis saat refresh.
+ *
+ * Refresh dulu menghapus seluruh baris kota lalu menulis ulang semuanya, jadi
+ * satu putaran 15 wilayah membakar >2.000 penulisan harian meski data OSM
+ * tidak berubah. Sekarang hanya baris baru/berubah yang ditulis, dan hanya
+ * entitas yang benar-benar hilang yang dihapus.
+ */
+export function refreshWritePlan(rawRows = [], leads = []) {
+  const stored = new Map(rawRows.map((row) => [row.id, row]));
+  const writes = [];
+  const deletes = [];
+  const desired = new Set();
+  for (const lead of leads) {
+    desired.add(lead.id);
+    const raw = stored.get(lead.id);
+    if (raw && storedLeadMatches(raw, lead)) continue;
+    writes.push(lead);
+  }
+  for (const row of rawRows) {
+    if (!desired.has(row.id)) deletes.push(row.id);
+  }
+  return { writes, deletes };
+}
+
+/** Kolom yang di-upsert harus sama persis; CASE "excluded kosong" dihitung. */
+function storedLeadMatches(raw, lead) {
+  const same = (storedValue, nextValue) =>
+    !nextValue || String(nextValue) === String(storedValue ?? "");
+  const lat = Number(lead.latitude) || 0;
+  const lng = Number(lead.longitude) || 0;
+  return (
+    String(raw.name ?? "") === String(lead.name ?? "") &&
+    String(raw.city ?? "") === String(lead.city ?? "") &&
+    same(raw.area, lead.area) &&
+    String(raw.category ?? "") === String(lead.category ?? "") &&
+    same(raw.email, lead.email) &&
+    same(raw.phone, lead.phone) &&
+    same(raw.website, lead.website) &&
+    same(raw.contact_name, lead.contactName) &&
+    same(raw.contact_role, lead.contactRole) &&
+    same(raw.contact_url, lead.contactUrl) &&
+    same(raw.contact_source, lead.contactSource) &&
+    (lat === 0 || lat === Number(raw.latitude ?? 0)) &&
+    (lng === 0 || lng === Number(raw.longitude ?? 0)) &&
+    same(raw.coordinate_address, lead.coordinateAddress) &&
+    same(raw.coordinate_source, lead.coordinateSource)
+  );
+}
+
 export async function refreshCorporateCity(db, cityName, seed) {
   const city = cityByName(cityName);
   if (!city) {
@@ -2715,15 +2788,18 @@ export async function refreshCorporateCity(db, cityName, seed) {
     if (chosen) lead.city = chosen;
   }
   const now = new Date().toISOString();
+  const { writes, deletes } = refreshWritePlan(existingRows.results ?? [], leads);
   const statements = [
-    db.prepare("DELETE FROM corporate_leads WHERE city = ?").bind(city.name),
     db
       .prepare(
         "INSERT INTO corporate_city_refresh (city, refreshed_at, bbox) VALUES (?, ?, ?) ON CONFLICT(city) DO UPDATE SET refreshed_at = excluded.refreshed_at, bbox = excluded.bbox",
       )
       .bind(city.name, now, refreshCacheKey(city.bbox)),
   ];
-  for (const lead of leads) {
+  for (const id of deletes) {
+    statements.push(db.prepare("DELETE FROM corporate_leads WHERE id = ?").bind(id));
+  }
+  for (const lead of writes) {
     const prior = existing.get(lead.id) || seedById.get(lead.id) || {};
     const screening = screeningFieldsForRefresh(prior, lead);
     statements.push(

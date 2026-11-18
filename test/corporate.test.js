@@ -12,6 +12,7 @@ import {
   normalizeOsmCoordinateSource,
   osmElementCenter,
   planCorporateRelabel,
+  refreshWritePlan,
   relabelCorporateLeads,
   refreshCacheKey,
   refreshCacheReusable,
@@ -232,6 +233,96 @@ test("relabel default hanya audit, apply baru menulis", async () => {
       ["Tangerang", "osm:node/3"],
     ],
   );
+});
+
+function rawLead(overrides = {}) {
+  return {
+    id: "osm:node/1",
+    name: "Hotel A",
+    city: "Kota Bogor",
+    area: "",
+    category: "hotel",
+    email: "pic@hotel-a.id",
+    phone: "081234567890",
+    website: "https://hotel-a.id",
+    contact_name: "Budi",
+    contact_role: "General Manager",
+    contact_url: "https://hotel-a.id/kontak",
+    contact_source: "Website resmi",
+    latitude: -6.59,
+    longitude: 106.8,
+    coordinate_address: "Jl. A",
+    coordinate_source: "OpenStreetMap (node 1)",
+    ...overrides,
+  };
+}
+
+function plannedLead(overrides = {}) {
+  return {
+    id: "osm:node/1",
+    name: "Hotel A",
+    city: "Kota Bogor",
+    area: "",
+    category: "hotel",
+    email: "pic@hotel-a.id",
+    phone: "081234567890",
+    website: "https://hotel-a.id",
+    contactName: "Budi",
+    contactRole: "General Manager",
+    contactUrl: "https://hotel-a.id/kontak",
+    contactSource: "Website resmi",
+    latitude: -6.59,
+    longitude: 106.8,
+    coordinateAddress: "Jl. A",
+    coordinateSource: "OpenStreetMap (node 1)",
+    ...overrides,
+  };
+}
+
+test("refresh tidak menulis ulang lead yang tidak berubah", () => {
+  const plan = refreshWritePlan([rawLead()], [plannedLead()]);
+  assert.deepEqual(plan.writes, []);
+  assert.deepEqual(plan.deletes, []);
+});
+
+test("refresh hanya menulis lead yang benar-benar berubah", () => {
+  const changed = plannedLead({ name: "Hotel A Baru", city: "Kab. Bogor" });
+  const plan = refreshWritePlan([rawLead()], [changed]);
+  assert.equal(plan.writes.length, 1);
+  assert.equal(plan.writes[0].id, "osm:node/1");
+  assert.deepEqual(plan.deletes, []);
+});
+
+test("nilai kosong dari OSM tidak menghapus data yang sudah tersimpan", () => {
+  // SQL upsert memakai CASE: excluded kosong berarti pertahankan nilai lama,
+  // jadi baris seperti ini tidak perlu ditulis sama sekali.
+  const plan = refreshWritePlan(
+    [rawLead()],
+    [
+      plannedLead({
+        area: "",
+        email: "",
+        phone: "",
+        website: "",
+        contactName: "",
+        contactRole: "",
+        contactUrl: "",
+        contactSource: "",
+        latitude: 0,
+        longitude: 0,
+        coordinateAddress: "",
+        coordinateSource: "",
+      }),
+    ],
+  );
+  assert.deepEqual(plan.writes, []);
+});
+
+test("refresh menghapus hanya entitas yang benar-benar hilang", () => {
+  const gone = rawLead({ id: "osm:node/2", name: "Hotel B" });
+  const plan = refreshWritePlan([rawLead(), gone], [plannedLead()]);
+  assert.deepEqual(plan.writes, []);
+  assert.deepEqual(plan.deletes, ["osm:node/2"]);
 });
 
 test("urutan refresh tidak mengubah label wilayah lead", () => {
