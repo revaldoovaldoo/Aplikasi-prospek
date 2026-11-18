@@ -842,7 +842,7 @@ export async function researchCorporateLead(db, leadId, env = {}) {
       error instanceof Error ? error.message : "OpenOSINT tidak dapat dijalankan.",
     tools: [],
   }));
-  let site = { pages: [], text: "" };
+  let site = { pages: [], documents: [], text: "" };
   if (website) {
     try {
       site = await readPublicText(website, 8);
@@ -857,13 +857,16 @@ export async function researchCorporateLead(db, leadId, env = {}) {
   if (
     contactHintUrl &&
     hostOf(contactHintUrl) === siteHost &&
-    !site.pages.some((page) => normalizeUrl(page.url) === normalizeUrl(contactHintUrl))
+    !(site.documents || []).some(
+      (page) => normalizeUrl(page.url) === normalizeUrl(contactHintUrl),
+    )
   ) {
     try {
       const hintPage = await readPublicText(contactHintUrl, 1);
-      const page = hintPage.pages?.[0];
+      const page = hintPage.documents?.[0];
       if (page) {
-        site.pages.push(page);
+        site.documents = [...(site.documents || []), page];
+        site.pages = [...site.pages, page.url];
         site.text = `${site.text} ${page.text || ""}`.trim();
       }
     } catch {
@@ -970,7 +973,11 @@ export async function researchCorporateLead(db, leadId, env = {}) {
   // Satu sumber harus memuat nama dan nomor sekaligus. Menggabungkan teks
   // beberapa halaman membuat nama dari halaman "Tentang Kami" bisa tampak
   // berpasangan dengan nomor kantor dari halaman "Kontak".
-  const boundPhonePage = boundPicPhoneSource(personName, phone, site.pages || []);
+  const boundPhonePage = boundPicPhoneSource(
+    personName,
+    phone,
+    site.documents || [],
+  );
   const boundPhoneCitation =
     boundPhonePage ||
     boundPicPhoneSource(personName, phone, bindingCitations);

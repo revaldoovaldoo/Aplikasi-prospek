@@ -1854,13 +1854,20 @@ export async function readPublicText(website, maxPages = 4) {
     html: await readPage(url),
   }));
   const pages = [];
+  const documents = [];
   const chunks = [];
   for (const item of loaded) {
     if (!item.html) continue;
+    const text = htmlToLines(item.html).join("\n");
     pages.push(item.url);
-    chunks.push(htmlToLines(item.html).join("\n"));
+    documents.push({ url: item.url, text });
+    chunks.push(text);
   }
-  return { pages, text: chunks.join("\n").slice(0, 28_000) };
+  return {
+    pages,
+    documents,
+    text: chunks.join("\n").slice(0, 28_000),
+  };
 }
 
 const EXA_SEARCH_URL = "https://api.exa.ai/search";
