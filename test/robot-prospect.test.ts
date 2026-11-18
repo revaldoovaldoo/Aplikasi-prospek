@@ -10,6 +10,7 @@ import {
   reconcileTelegramProspects,
   reviewCorporateScreening,
   runFindingQualifierAgent,
+  sendPublishTelegram,
 } from "../worker/robot.js";
 import {
   boundPicPhoneSource,
@@ -148,6 +149,7 @@ test("Kurir Telegram menolak nama resepsionis, placeholder, dan beberapa nama", 
     name: "Hotel Contoh",
     city: "Jakarta",
     category: "hotel",
+    email: "budi@contoh.co.id",
     phone: "08123456789",
     latitude: -6.2,
     longitude: 106.8,
@@ -241,7 +243,7 @@ const lead = {
   city: "Kab. Bogor",
   area: "Ciawi",
   category: "hotel",
-  email: "",
+  email: "budi@hotelexample.com",
   phone: "+62 812-3456-7890",
   website: "",
   contactName: "Budi",
@@ -271,7 +273,7 @@ test("Penulis Prospek menyimpan lead yang sudah lolos syarat Telegram", async ()
   assert.equal(data.companies[0].contactName, "Budi");
   assert.equal(data.companies[0].sourceLeadId, "lead-1");
   assert.equal(data.companies[0].validationStatus, "verified");
-  assert.equal(data.companies[0].email, "");
+  assert.equal(data.companies[0].email, "budi@hotelexample.com");
   assert.equal(data.companies[0].website, "");
 });
 
@@ -286,6 +288,11 @@ test("Penulis Prospek memperbarui lead yang sudah ada tanpa duplikat", async () 
   const second = await publishLeadToProspect(db, "owner-1", {
     ...lead,
     contactName: "Budi Santoso",
+    // Bukti harus ikut menyebut nama PIC terbaru; bukti lama untuk "Budi"
+    // sekarang ditolak karena tidak mengikat orang yang sama.
+    validationEvidence: [
+      "Nomor PIC +62 812-3456-7890 tercantum bersama PIC Budi Santoso pada https://hotel.example.com/kontak.",
+    ],
   });
   assert.equal(second.added, false);
   assert.equal(second.updated, true);
@@ -990,6 +997,136 @@ test("publish Prospek menolak screening disabled/kosong tanpa konfirmasi", async
       `publish ${screeningStatus || "kosong"} harus ditolak`,
     );
   }
+});
+
+/**
+ * Jalur publish nyata: sendPublishTelegram (pengirim Telegram) dan
+ * publishLeadToProspect (penulis Prospek). Setiap lead cacat harus menghasilkan
+ * nol panggilan jaringan Telegram dan nol baris baru di Prospek.
+ */
+const publishReadyLead = {
+  id: "lead-gate",
+  name: "PT Contoh Nusantara",
+  city: "Kab. Bogor",
+  area: "Ciawi",
+  category: "company",
+  email: "budi.santoso@contoh.co.id",
+  phone: "081234567890",
+  contactName: "Budi Santoso",
+  contactRole: "IT Manager",
+  latitude: -6.6,
+  longitude: 106.8,
+  coordinateSource: "OpenStreetMap node",
+  screeningStatus: "clear",
+  validationStatus: "verified",
+  validationEvidence: [
+    "Nomor PIC 081234567890 tercantum bersama PIC Budi Santoso pada https://contoh.co.id/kontak.",
+  ],
+};
+
+function emptyProspectDb() {
+  return fakeStateDb({
+    companies: [],
+    quotes: [],
+    locations: ["Jakarta"],
+    profile: {},
+  });
+}
+
+async function expectPublishBlocked(caseName: string, badLead: Record<string, unknown>) {
+  const telegramSettings = { telegram_chat_id: "chat-1", auto_publish: true };
+  const env = { TELEGRAM_BOT_TOKEN: "token-uji", TELEGRAM_CHAT_ID: "chat-1" };
+  const db = emptyProspectDb();
+  let telegramCalls = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    telegramCalls += 1;
+    throw new Error("Telegram tidak boleh dipanggil untuk lead tidak valid");
+  }) as typeof fetch;
+  let telegramResult: { ok: boolean } = { ok: true };
+  let prospectResult: { added: boolean } = { added: true };
+  try {
+    telegramResult = await sendPublishTelegram(
+      db as never,
+      { lead_id: String(badLead.id || ""), telegram_sent_at: "" } as never,
+      env as never,
+      telegramSettings as never,
+      badLead as never,
+    );
+    prospectResult = await publishLeadToProspect(db as never, "owner-1", badLead as never);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(telegramResult.ok, false, `${caseName}: Telegram harus menolak`);
+  assert.equal(telegramCalls, 0, `${caseName}: tidak boleh ada panggilan Telegram`);
+  assert.equal(prospectResult.added, false, `${caseName}: Prospek harus menolak`);
+  assert.equal(db.state.updated, false, `${caseName}: Prospek tidak boleh ditulis`);
+  const data = JSON.parse(db.state.payload);
+  assert.equal(data.companies.length, 0, `${caseName}: tidak boleh ada baris Prospek baru`);
+}
+
+test("fixture publish siap terbit sehingga penolakan berasal dari cacat yang diuji", () => {
+  assert.match(buildTelegramMessage(publishReadyLead as never), /Nama PIC : Budi Santoso/);
+});
+
+test("publish menolak lead yang validationStatus-nya bukan verified", async () => {
+  for (const status of ["partial", "missing", ""]) {
+    await expectPublishBlocked(`status ${status || "kosong"}`, {
+      ...publishReadyLead,
+      validationStatus: status,
+    });
+  }
+});
+
+test("publish menolak lead verified tanpa e-mail PIC atau e-mail generik", async () => {
+  await expectPublishBlocked("e-mail kosong", { ...publishReadyLead, email: "" });
+  await expectPublishBlocked("e-mail generik", {
+    ...publishReadyLead,
+    email: "info@contoh.co.id",
+  });
+});
+
+test("publish menolak lead verified dengan nomor PIC kosong atau tidak valid", async () => {
+  await expectPublishBlocked("nomor kosong", { ...publishReadyLead, phone: "" });
+  await expectPublishBlocked("nomor tidak valid", { ...publishReadyLead, phone: "12345" });
+  await expectPublishBlocked("nomor kantor", {
+    ...publishReadyLead,
+    phone: "021-555-1234",
+  });
+});
+
+test("publish menolak lead verified dengan nama PIC kosong atau placeholder", async () => {
+  await expectPublishBlocked("nama kosong", { ...publishReadyLead, contactName: "" });
+  await expectPublishBlocked("nama placeholder", {
+    ...publishReadyLead,
+    contactName: "Admin",
+  });
+  await expectPublishBlocked("nama penerima tamu", {
+    ...publishReadyLead,
+    contactName: "Resepsionis",
+  });
+});
+
+test("publish menolak bukti satu halaman yang menyebut orang lain", async () => {
+  // Nama dan nomor valid, tetapi bukti mengikat nomor ke PIC lain.
+  await expectPublishBlocked("nama bukti berbeda", {
+    ...publishReadyLead,
+    validationEvidence: [
+      "Nomor PIC 081234567890 tercantum bersama PIC Siti Aminah pada https://contoh.co.id/kontak.",
+    ],
+  });
+  // Nama cocok, tetapi nomor pada bukti nomor orang lain.
+  await expectPublishBlocked("nomor bukti berbeda", {
+    ...publishReadyLead,
+    validationEvidence: [
+      "Nomor PIC 081298765432 tercantum bersama PIC Budi Santoso pada https://contoh.co.id/kontak.",
+    ],
+  });
+  // Bukti hanya nomor kantor/CS tanpa mengikat nama PIC.
+  await expectPublishBlocked("bukti tanpa ikatan", {
+    ...publishReadyLead,
+    validationEvidence: ["Nomor kantor 081234567890 tertera di halaman kontak."],
+  });
 });
 
 test("lead dengan review OpenSanctions belum dikonfirmasi ditahan dari Prospek", () => {

@@ -810,6 +810,54 @@ export function hasBoundPicPhoneEvidence(lead = {}) {
   );
 }
 
+const GENERIC_PIC_EMAIL_RE =
+  /^(?:info|sales|marketing|reservation|reservasi|contact|kontak|admin|administrasi|office|hello|support|cs|frontdesk|front\.office|hrd|career|karir|recruitment|purchasing|procurement|sekretariat|humas|reception|resepsionis|billing|finance|keuangan|pendaftaran|ppdb|operator)@/i;
+
+/**
+ * E-mail yang boleh dipublikasikan harus alamat PIC, bukan kotak generik
+ * (info/sales/admin) dan bukan alamat kosong. Gate ini dipakai Kurir Telegram
+ * dan Penulis Prospek agar "verified" tanpa e-mail PIC tidak lolos.
+ */
+export function picEmailReady(lead = {}) {
+  const email = clean(lead.email).toLowerCase();
+  if (!/^[^@\s]+@[^@\s]+\.[a-z]{2,}$/.test(email)) return false;
+  return !GENERIC_PIC_EMAIL_RE.test(email);
+}
+
+function personNameKey(value) {
+  return clean(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter(Boolean)
+    .sort()
+    .join(" ");
+}
+
+/**
+ * Bukti satu halaman harus menyebut orang yang sama: nama pada bukti sama
+ * dengan nama PIC dan nomor pada bukti adalah nomor PIC itu. Pola teks saja
+ * tidak cukup karena bukti bisa menyebut orang lain di halaman yang sama.
+ */
+export function picEvidenceMatchesLead(lead = {}) {
+  const name = personNameKey(sanitizePicName(lead.contactName));
+  const digits = String(lead.phone || "").replace(/\D/g, "");
+  if (!name || digits.length < 8) return false;
+  const tail = digits.slice(-8);
+  return (Array.isArray(lead.validationEvidence) ? lead.validationEvidence : []).some(
+    (item) => {
+      const match =
+        /^Nomor PIC (.+?) tercantum bersama PIC (.+?) pada https?:\/\/\S+\.?$/i.exec(
+          clean(item),
+        );
+      if (!match) return false;
+      const evidenceDigits = String(match[1] || "").replace(/\D/g, "");
+      if (evidenceDigits.length < 8 || evidenceDigits.slice(-8) !== tail) return false;
+      return personNameKey(match[2]) === name;
+    },
+  );
+}
+
 /** True bila error berasal dari kuota/billing OpenSanctions (HTTP 402). */
 export function screeningQuotaFailure(lead = {}) {
   if (clean(lead.screeningStatus).toLowerCase() !== "error") return false;

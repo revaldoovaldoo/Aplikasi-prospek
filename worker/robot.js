@@ -18,6 +18,8 @@ import {
   coordinateReadyForPublish,
   ensureCorporateSchema,
   hasBoundPicPhoneEvidence,
+  picEmailReady,
+  picEvidenceMatchesLead,
   exaSearch,
   readPublicText,
   resolveLeadCoordinates,
@@ -1349,7 +1351,12 @@ function contactReadyForPublish(lead) {
     sanitizePicName(lead.contactName) &&
       isPicRole(lead.contactRole) &&
       validPicPhone(lead.phone) &&
+      // E-mail PIC wajib: "verified" tanpa e-mail PIC bukan hasil Klarifikasi
+      // yang lengkap, jadi Telegram dan Prospek harus menolaknya.
+      picEmailReady(lead) &&
       hasBoundPicPhoneEvidence(lead) &&
+      // Bukti harus menyebut orang yang sama, bukan orang lain di halaman itu.
+      picEvidenceMatchesLead(lead) &&
       coordinateReadyForPublish(lead),
   );
 }
@@ -2026,7 +2033,7 @@ async function publishProspectAgent(db, settings, ownerId, lead) {
  * Agen Publish 1 — Kurir Telegram. Semua pengiriman masuk ke outbox dengan
  * kunci unik `lead_id + jenis pesan`; tidak ada jalur kirim langsung.
  */
-async function sendPublishTelegram(db, row, env, settings, lead) {
+export async function sendPublishTelegram(db, row, env, settings, lead) {
   const configured = Boolean(telegramConfig(env, settings).configured);
   if (row.telegram_sent_at) {
     return {
