@@ -2074,7 +2074,11 @@ async function advanceJob(db, row, env, settings, ownerId) {
   let notified = 0;
   let found = false;
 
-  for (let step = 0; step < 4; step += 1) {
+  // Satu tahap per invokasi. Cloudflare membatasi subrequest per request;
+  // Finding + Klarifikasi + Publish sekaligus menghabiskan kuota sehingga
+  // panel riset dan screening berikutnya gagal. Tahap berikutnya dijalankan
+  // oleh tick/retrigger selanjutnya dengan kuota jaringan baru.
+  for (let step = 0; step < 1; step += 1) {
     if (stage === "finding") {
       const assessment = await assessNeed(lead, env, {
         exaSearch: true,
