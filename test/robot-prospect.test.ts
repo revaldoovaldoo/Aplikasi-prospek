@@ -12,6 +12,7 @@ import {
   runFindingQualifierAgent,
 } from "../worker/robot.js";
 import {
+  boundPicPhoneSource,
   hasBoundPicPhoneEvidence,
   phoneBoundToPic,
   screeningHoldReason,
@@ -79,6 +80,26 @@ test("Penilai kebutuhan meloloskan sinyal upgrade jaringan yang kuat", () => {
   assert.ok(result.strongCount >= 1);
   assert.equal(result.qualified, true);
   assert.ok(result.score >= 48);
+});
+
+test("Nama dan nomor PIC harus berada di satu halaman, bukan digabung dari dua halaman", () => {
+  const pages = [
+    { url: "https://contoh.co.id/tentang", text: "Profil perusahaan. Direktur: Budi Santoso." },
+    {
+      url: "https://contoh.co.id/kontak",
+      text: "Kantor pusat. Telepon 0812-3456-7890. Jam kerja Senin-Jumat.",
+    },
+  ];
+  assert.equal(boundPicPhoneSource("Budi Santoso", "0812-3456-7890", pages), null);
+  assert.equal(
+    boundPicPhoneSource("Budi Santoso", "0812-3456-7890", [
+      {
+        url: "https://contoh.co.id/kontak",
+        text: "Kontak langsung Budi Santoso, WhatsApp 0812-3456-7890.",
+      },
+    ])?.url,
+    "https://contoh.co.id/kontak",
+  );
 });
 
 test("Nomor PIC harus muncul dekat nama PIC, bukan nomor CS/kantor", () => {

@@ -15,6 +15,7 @@
 
 import {
   boundPicPhoneEvidence,
+  boundPicPhoneSource,
   coordinateCandidateMatchesName,
   coordinateInRegion,
   coordinateReadyForPublish,
@@ -24,7 +25,6 @@ import {
   isRegionCoordinateSource,
   isRoadCoordinate,
   osmElementCenter,
-  phoneBoundToPic,
   readPublicText,
   regionCoordinate,
   rowToLead,
@@ -411,7 +411,9 @@ async function geocodeAddress(db, address, entityName) {
     const url = new URL(PHOTON_URL);
     url.searchParams.set("q", /indonesia/i.test(text) ? text : `${text}, Indonesia`);
     url.searchParams.set("limit", "5");
-    url.searchParams.set("lang", "id");
+    // Photon hanya menerima default/de/en/fr. `id` menghasilkan HTTP 400 dan
+    // membuat semua kandidat manual jatuh ke pusat wilayah.
+    url.searchParams.set("lang", "en");
     const response = await fetch(url.toString(), {
       headers: { Accept: "application/json" },
       signal: AbortSignal.timeout(GEO_TIMEOUT_MS),
@@ -896,10 +898,6 @@ export async function researchCorporateLead(db, leadId, env = {}) {
       );
     }),
   );
-  const bindingCitationText = bindingCitations
-    .map((citation) => `${citation.title || ""} ${citation.text || ""}`)
-    .join(" ");
-  const phoneBindingText = `${evidenceText} ${bindingCitationText}`.trim();
 
   const directSiteReadable = site.pages.length > 0 && siteText.length >= 120;
   const citedSiteReadable = officialCitations.length > 0 && officialCitationText.length >= 160;
@@ -946,16 +944,14 @@ export async function researchCorporateLead(db, leadId, env = {}) {
   // Nomor harus muncul di halaman yang sama dengan nama PIC, bukan sekadar
   // nomor kantor/CS yang ada di website. LinkedIn boleh menjadi sumber nama,
   // tetapi nomor tetap harus terikat ke nama pada halaman resmi.
-  const boundPhonePage =
-    (site.pages || []).find((page) =>
-      phoneBoundToPic(personName, phone, page.text || ""),
-    ) ||
-    bindingCitations.find((citation) =>
-      phoneBoundToPic(personName, phone, `${citation.title || ""} ${citation.text || ""}`),
-    );
-  const phoneBoundToPerson = Boolean(
-    phoneBoundToPic(personName, phone, phoneBindingText),
-  );
+  // Satu sumber harus memuat nama dan nomor sekaligus. Menggabungkan teks
+  // beberapa halaman membuat nama dari halaman "Tentang Kami" bisa tampak
+  // berpasangan dengan nomor kantor dari halaman "Kontak".
+  const boundPhonePage = boundPicPhoneSource(personName, phone, site.pages || []);
+  const boundPhoneCitation =
+    boundPhonePage ||
+    boundPicPhoneSource(personName, phone, bindingCitations);
+  const phoneBoundToPerson = Boolean(boundPhoneCitation);
   const phoneVerified = Boolean(
     hasValidPhone(phone) &&
       phoneFromPanel &&
@@ -964,7 +960,7 @@ export async function researchCorporateLead(db, leadId, env = {}) {
   );
 
   const contactUrl =
-    boundPhonePage?.url ||
+    boundPhoneCitation?.url ||
     citationForPerson(results, personName)?.url ||
     officialCitations[0]?.url ||
     lead.contactUrl ||

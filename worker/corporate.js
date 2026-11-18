@@ -762,6 +762,26 @@ export function phoneBoundToPic(personName, phone, text) {
   return false;
 }
 
+/**
+ * Cari satu sumber (halaman/sitasi) yang memuat nama PIC dan nomor PIC
+ * berdekatan. Sumber tidak boleh digabung: nama dari halaman A dan nomor
+ * kantor dari halaman B bukan bukti bahwa nomor itu milik PIC.
+ */
+export function boundPicPhoneSource(personName, phone, sources = []) {
+  for (const source of Array.isArray(sources) ? sources : []) {
+    const entry =
+      typeof source === "string"
+        ? { url: "", text: source }
+        : source && typeof source === "object"
+          ? source
+          : null;
+    if (!entry) continue;
+    const text = `${entry.title || ""} ${entry.text || ""}`.trim();
+    if (phoneBoundToPic(personName, phone, text)) return entry;
+  }
+  return null;
+}
+
 /** Bukti terstruktur bahwa nomor PIC terikat ke nama PIC di halaman resmi. */
 export function boundPicPhoneEvidence(personName, phone, url) {
   if (!clean(personName) || !clean(phone) || !clean(url)) return "";
