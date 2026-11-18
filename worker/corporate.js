@@ -1718,7 +1718,7 @@ export async function readPublicText(website, maxPages = 4) {
 const EXA_SEARCH_URL = "https://api.exa.ai/search";
 const EXA_ANSWER_URL = "https://api.exa.ai/answer";
 const EXA_TIMEOUT_MS = 12_000;
-const EXA_ANSWER_TIMEOUT_MS = 15_000;
+const EXA_ANSWER_TIMEOUT_MS = 25_000;
 
 function exaKey(env) {
   return typeof env?.EXA_API_KEY === "string" ? env.EXA_API_KEY.trim() : "";
@@ -1810,16 +1810,22 @@ export async function exaAnswer(env, options = {}) {
     });
     const body = await response.json().catch(() => null);
     if (!response.ok || body?.error) {
+      const detail =
+        typeof body?.error === "string"
+          ? body.error.replace(/\s+/g, " ").slice(0, 180)
+          : typeof body?.message === "string"
+            ? body.message.replace(/\s+/g, " ").slice(0, 180)
+            : "";
       console.error(
         "corporate_exa_answer_error",
         response.status,
-        typeof body?.error === "string" ? body.error.slice(0, 180) : "",
+        detail,
       );
       return {
         enabled: true,
         answer: null,
         citations: [],
-        error: "Panel riset publik sedang tidak tersedia.",
+        error: `Panel riset publik sedang tidak tersedia (HTTP ${response.status}${detail ? `: ${detail}` : ""}).`,
       };
     }
     const answer = parseExaAnswer(body?.answer);

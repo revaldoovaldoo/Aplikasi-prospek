@@ -137,56 +137,35 @@ const CONTACT_SCHEMA = {
   },
 };
 
+// Exa membatasi outputSchema objek ke 10 properti. Verifier harus tetap
+// menghasilkan bukti inti; konflik dan catatan digabung ke role agar schema
+// tidak ditolak sebelum agen sempat berjalan.
 const VERIFIER_SCHEMA = {
   type: "object",
   additionalProperties: false,
   required: [
     "websiteVerified",
-    "emailVerified",
     "phoneVerified",
     "personVerified",
     "locationVerified",
     "website",
     "personName",
     "role",
-    "email",
     "phone",
-    "address",
-    "city",
     "latitude",
     "longitude",
-    "confidence",
-    "conflicts",
-    "notes",
-    "sources",
   ],
   properties: {
     websiteVerified: { type: "boolean" },
-    emailVerified: { type: "boolean" },
     phoneVerified: { type: "boolean" },
     personVerified: { type: "boolean" },
     locationVerified: { type: "boolean" },
     website: { type: "string" },
     personName: { type: "string" },
     role: { type: "string" },
-    email: { type: "string" },
     phone: { type: "string" },
-    address: { type: "string" },
-    city: { type: "string" },
     latitude: { type: "number" },
     longitude: { type: "number" },
-    confidence: { type: "integer", minimum: 0, maximum: 100 },
-    conflicts: {
-      type: "array",
-      maxItems: 8,
-      items: { type: "string" },
-    },
-    notes: { type: "string" },
-    sources: {
-      type: "array",
-      maxItems: 8,
-      items: { type: "string" },
-    },
   },
 };
 
