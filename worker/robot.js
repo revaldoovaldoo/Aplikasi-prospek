@@ -3089,9 +3089,12 @@ export async function runCorporateRobot(db, env = {}, options = {}) {
       .map((id) => clean(String(id || "")))
       .filter(Boolean)
       .slice(0, 12);
+    // Bila lead dipilih eksplisit, hanya lead itu yang diproses, tanpa
+    // mencampurnya dengan antrean jatuh tempo lain. Ini membuat retrigger
+    // manual deterministik untuk audit dan demo tiga vertical.
     const selectedClause =
       selectedLeadIds.length > 0
-        ? `(j.next_run_at <= ? OR j.lead_id IN (${selectedLeadIds.map(() => "?").join(", ")}))`
+        ? `j.lead_id IN (${selectedLeadIds.map(() => "?").join(", ")})`
         : "j.next_run_at <= ?";
     const rows = await db
       .prepare(
@@ -3110,7 +3113,7 @@ export async function runCorporateRobot(db, env = {}, options = {}) {
            j.updated_at ASC
          LIMIT ?`,
       )
-      .bind(nowIso(), ...selectedLeadIds, limit)
+      .bind(...(selectedLeadIds.length > 0 ? selectedLeadIds : [nowIso()]), limit)
       .all();
 
     const processRow = async (row) => {
