@@ -1913,10 +1913,11 @@ export async function publishLeadToProspect(db, ownerId, lead) {
     contactRole: clean(lead.contactRole) || clean(prior.contactRole),
     contactSource: clean(lead.contactSource) || clean(prior.contactSource),
     ...coordinateFields,
+    // Status terbaru dari Klarifikasi selalu menang. Jangan mempertahankan
+    // `verified` lama bila riset ulang menyatakan partial, karena itu membuat
+    // lead yang sudah tidak valid tetap tampil seolah tervalidasi.
     validationStatus:
-      clean(prior.validationStatus) === "verified"
-        ? "verified"
-        : clean(lead.validationStatus) || clean(prior.validationStatus) || "partial",
+      clean(lead.validationStatus) || clean(prior.validationStatus) || "partial",
     validationEvidence:
       Array.isArray(lead.validationEvidence) && lead.validationEvidence.length
         ? lead.validationEvidence

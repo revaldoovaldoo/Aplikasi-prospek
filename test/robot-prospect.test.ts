@@ -294,6 +294,26 @@ test("Penulis Prospek memperbarui lead yang sudah ada tanpa duplikat", async () 
   assert.equal(data.companies[0].contactName, "Budi Santoso");
 });
 
+test("Sinkronisasi mengeluarkan Prospek robot yang tidak lagi valid", () => {
+  const data = {
+    companies: [
+      {
+        id: "co_robot_1",
+        name: "Hotel Contoh",
+        source: "Corporate Engine · Robot AI",
+        sourceLeadId: "lead-1",
+        validationStatus: "verified",
+      },
+    ],
+    quotes: [],
+    locations: ["Jakarta"],
+  };
+  const next = syncRobotCompanies(data as never, [
+    { ...lead, validationStatus: "partial" } as never,
+  ]);
+  assert.equal(next.companies.length, 0);
+});
+
 test("Sinkronisasi robot tidak menimpa koordinat yang sudah dikoreksi", () => {
   const data = {
     companies: [
@@ -738,6 +758,7 @@ test("error kuota tidak menghapus Prospek lama tetapi tetap menahan publish", ()
       latitude: -6.2,
       longitude: 106.8,
       coordinateSource: "OpenStreetMap node",
+      validationStatus: "verified",
       screeningStatus: "error",
       screeningEvidence: ["OpenSanctions: kuota/billing API habis (HTTP 402)."],
     } as never,

@@ -689,6 +689,14 @@ export function syncRobotCompanies(
       )
       .map((lead) => lead.id),
   );
+  // Prospek robot hanya boleh memuat lead yang dinyatakan verified oleh
+  // Klarifikasi. Lead partial/missing yang sudah terlanjur masuk dikeluarkan
+  // saat sinkronisasi, kecuali record tersebut sudah punya penawaran.
+  const invalidLeadIds = new Set(
+    leads
+      .filter((lead) => lead.validationStatus !== "verified")
+      .map((lead) => lead.id),
+  );
   const quotedCompanyIds = new Set(
     (data.quotes || [])
       .filter((quote) => quote.quoteFile)
@@ -698,7 +706,8 @@ export function syncRobotCompanies(
     (company) =>
       !isRobotCompany(company) ||
       !company.sourceLeadId ||
-      !blockedLeadIds.has(company.sourceLeadId) ||
+      (!blockedLeadIds.has(company.sourceLeadId) &&
+        !invalidLeadIds.has(company.sourceLeadId)) ||
       quotedCompanyIds.has(company.id),
   );
   if (keptCompanies.length !== data.companies.length) {
