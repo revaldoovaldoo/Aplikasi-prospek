@@ -850,13 +850,36 @@ export async function researchCorporateLead(db, leadId, env = {}) {
       /* website tidak bisa dibaca; validasi akan gagal */
     }
   }
+  // Halaman sumber PIC yang diberikan kandidat harus benar-benar dibaca,
+  // bukan hanya homepage. Tanpa ini nomor PIC di halaman profil bisa gagal
+  // berpasangan dengan namanya karena halaman tersebut tidak ikut dijelajahi.
+  const contactHintUrl = clean(lead.contactUrl);
+  if (
+    contactHintUrl &&
+    hostOf(contactHintUrl) === siteHost &&
+    !site.pages.some((page) => normalizeUrl(page.url) === normalizeUrl(contactHintUrl))
+  ) {
+    try {
+      const hintPage = await readPublicText(contactHintUrl, 1);
+      const page = hintPage.pages?.[0];
+      if (page) {
+        site.pages.push(page);
+        site.text = `${site.text} ${page.text || ""}`.trim();
+      }
+    } catch {
+      /* halaman hint tidak bisa dibaca; panel tetap dipakai */
+    }
+  }
   const openosint = await openosintPromise;
 
   const email = clean(verifier.email || contact.email || lead.email).toLowerCase();
-  const phoneCandidate = clean(verifier.phone || contact.phone || lead.phone);
+  // Petunjuk kandidat yang sudah dibaca dari sumber publik diprioritaskan,
+  // lalu tetap diverifikasi terhadap halaman resmi. Panel tidak boleh
+  // menimpa nomor PIC dengan nomor sekolah/kantor yang lebih generik.
+  const phoneCandidate = clean(lead.phone || verifier.phone || contact.phone);
   const phone = formatPicPhones(phoneCandidate, 2) || phoneCandidate;
   const personName = sanitizePicName(
-    verifier.personName || contact.personName || lead.contactName,
+    lead.contactName || verifier.personName || contact.personName,
   );
   // Agen Klarifikasi kelima: screening sanksi/PEP untuk nama perusahaan dan
   // nama PIC. Ini bukan verifikasi kepemilikan nomor/e-mail; hasilnya menjadi
@@ -866,7 +889,7 @@ export async function researchCorporateLead(db, leadId, env = {}) {
     { ...lead, name: lead.name, contactName: personName },
     env,
   );
-  const role = clean(verifier.role || contact.role || lead.contactRole);
+  const role = clean(lead.contactRole || verifier.role || contact.role);
   const address = clean(
     verifier.address ||
       profile.address ||
