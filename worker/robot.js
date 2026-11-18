@@ -506,7 +506,10 @@ const NEED_DEFINITIONS = [
     label: "Rencana upgrade/pengadaan jaringan",
     weight: 20,
     strong: true,
-    re: /\b(?:upgrade|peningkatan|pengadaan|modernisasi|migrasi|perluasan|kapasitas|refresh|penggantian|replacement)\b/i,
+    // Kata "upgrade" saja tidak cukup: ulasan "upgrade villa" bukan sinyal
+    // jaringan. Objek upgrade harus eksplisit menyebut jaringan/internet/
+    // perangkat dalam jarak dekat.
+    re: /\b(?:upgrade|peningkatan|pengadaan|modernisasi|migrasi|perluasan|refresh|penggantian|replacement)\b[^.!?\n]{0,45}\b(?:jaringan|network|wifi|wi-fi|internet|bandwidth|perangkat|infrastruktur|server|access\s*point|akses\s*point)\b/i,
   },
   {
     id: "network",

@@ -45,6 +45,21 @@ test("Penilai kebutuhan tidak meloloskan hotel hanya karena menyebut wifi", () =
   assert.equal(result.qualified, false);
 });
 
+test("Penilai kebutuhan tidak menghitung 'upgrade villa' sebagai upgrade jaringan", () => {
+  const result = runFindingQualifierAgent(
+    { category: "hotel" },
+    {
+      text: "Ulasan tamu: pemilik villa ramah dan ingin upgrade villa yang lebih bagus lagi.",
+    },
+    { results: [] },
+  );
+  assert.equal(result.qualified, false);
+  assert.equal(
+    result.allEvidence.some((item) => item.startsWith("Rencana upgrade/pengadaan jaringan")),
+    false,
+  );
+});
+
 test("Penilai kebutuhan meloloskan sinyal upgrade jaringan yang kuat", () => {
   const result = runFindingQualifierAgent(
     { category: "hotel" },
