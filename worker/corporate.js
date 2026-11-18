@@ -1686,10 +1686,18 @@ export async function readPublicText(website, maxPages = 4) {
     `${base}/about`,
     `${base}/about-us`,
     `${base}/tentang-kami`,
-    `${base}/profil`,
     `${base}/kontak`,
     `${base}/contact`,
-  ].slice(0, Math.max(1, Math.min(6, maxPages)));
+    `${base}/team`,
+    `${base}/careers`,
+    `${base}/karir`,
+    `${base}/lowongan`,
+    `${base}/profil`,
+    `${base}/manajemen`,
+    `${base}/contact-us`,
+    `${base}/hubungi-kami`,
+    `${base}/our-team`,
+  ].slice(0, Math.max(1, Math.min(10, maxPages)));
   const loaded = await mapLimit(candidates, 3, async (url) => ({
     url,
     html: await readPage(url),
@@ -1701,7 +1709,7 @@ export async function readPublicText(website, maxPages = 4) {
     pages.push(item.url);
     chunks.push(htmlToLines(item.html).join("\n"));
   }
-  return { pages, text: chunks.join("\n").slice(0, 20_000) };
+  return { pages, text: chunks.join("\n").slice(0, 28_000) };
 }
 
 const EXA_SEARCH_URL = "https://api.exa.ai/search";
@@ -1857,7 +1865,9 @@ function searchResultMatches(lead, result) {
   const city = clean(lead.city).toLowerCase().replace(/^kota\s+/, "");
   const companyMatch = tokens.length === 0 || tokens.some((token) => haystack.includes(token));
   const cityMatch = Boolean(city && haystack.includes(city));
-  return companyMatch || cityMatch;
+  // Nama kota saja bukan bukti hasil pencarian membahas entitas yang sama.
+  // Untuk nama yang sangat pendek (mis. "BSI") tetap izinkan fallback kota.
+  return tokens.length === 0 ? cityMatch : companyMatch;
 }
 
 function peopleFromSearchResults(lead, results) {

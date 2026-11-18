@@ -502,39 +502,66 @@ async function ensureJobs(db) {
 
 const NEED_DEFINITIONS = [
   {
-    id: "internet",
-    label: "Menyebut internet/WiFi/bandwidth",
-    weight: 14,
-    re: /\b(?:wifi|wi-?fi|internet|bandwidth|hotspot|koneksi|uplink)\b/i,
+    id: "upgrade-intent",
+    label: "Rencana upgrade/pengadaan jaringan",
+    weight: 20,
+    strong: true,
+    re: /\b(?:upgrade|peningkatan|pengadaan|modernisasi|migrasi|perluasan|kapasitas|refresh|penggantian|replacement)\b/i,
   },
   {
     id: "network",
     label: "Menyebut perangkat/jaringan",
     weight: 18,
-    re: /\b(?:access point|mikrotik|router|jaringan|network|lan|vpn|firewall|switch|cctv)\b/i,
+    strong: true,
+    re: /\b(?:access point|mikrotik|router|jaringan|network|lan|vpn|firewall|switch|poe|fiber|serat optik|bandwidth|internet dedicated|cctv)\b/i,
   },
   {
     id: "expansion",
     label: "Sinyal ekspansi/gedung baru",
     weight: 16,
+    strong: true,
     re: /\b(?:renovasi|pembangunan|gedung baru|cabang baru|ekspansi|expansion|new branch|grand opening|pengembangan)\b/i,
   },
   {
-    id: "hiring",
-    label: "Membuka posisi/rekrutmen",
-    weight: 8,
-    re: /\b(?:lowongan|career|karir|rekrutmen|hiring|dibutuhkan|open position)\b/i,
+    id: "digital-learning",
+    label: "Digitalisasi/ujian berbasis komputer",
+    weight: 14,
+    strong: true,
+    re: /\b(?:lab(?:oratorium)? komputer|cbt|computer based test|ujian online|e-?learning|lms|smart school|digitalisasi|kelas digital)\b/i,
+  },
+  {
+    id: "hospitality-network",
+    label: "Operasional hotel membutuhkan jaringan",
+    weight: 12,
+    strong: true,
+    re: /\b(?:meeting room|ballroom|property management system|pms|smart hotel|guest wifi|wifi kamar|renovasi kamar|new wing)\b/i,
   },
   {
     id: "it-role",
     label: "Menyebut peran/divisi IT",
     weight: 12,
+    strong: true,
     re: /\b(?:it support|network engineer|sysadmin|system administrator|teknisi|helpdesk|teknologi informasi|divisi it)\b/i,
+  },
+  {
+    id: "hiring",
+    label: "Membuka posisi/rekrutmen",
+    weight: 8,
+    strong: false,
+    re: /\b(?:lowongan|career|karir|rekrutmen|hiring|dibutuhkan|open position)\b/i,
+  },
+  {
+    id: "internet",
+    label: "Menyebut internet/WiFi/bandwidth",
+    weight: 8,
+    strong: false,
+    re: /\b(?:wifi|wi-?fi|internet|hotspot|koneksi|uplink)\b/i,
   },
   {
     id: "many-users",
     label: "Operasional dengan banyak pengguna",
     weight: 6,
+    strong: false,
     re: /\b(?:reservasi|booking|tamu|guest|siswa|mahasiswa|laboratorium komputer|kampus|ruang meeting|co-?working)\b/i,
   },
 ];
@@ -597,6 +624,26 @@ async function runFindingProfileAgent(lead, options = {}) {
   }
 }
 
+/** Query pencarian yang menargetkan sinyal upgrade, bukan hanya profil umum. */
+export function findingSearchQueries(lead = {}) {
+  const name = clean(lead.name);
+  if (!name) return [];
+  const place = [lead.area, lead.city, "Indonesia"].filter(Boolean).join(" ");
+  const base = `"${name}" ${place}`;
+  const categoryQuery =
+    lead.category === "hotel"
+      ? `${base} ("meeting room" OR ballroom OR "wifi hotel" OR "property management system" OR "renovasi kamar")`
+      : lead.category === "school"
+        ? `${base} ("lab komputer" OR CBT OR "ujian online" OR "wifi sekolah" OR "smart school" OR e-learning)`
+        : `${base} (kantor cabang OR pabrik OR gudang OR server OR "network upgrade")`;
+  return [
+    `${base} (upgrade OR peningkatan OR pengadaan OR modernisasi) (wifi OR internet OR jaringan OR bandwidth OR "access point")`,
+    `${base} (lowongan OR karir OR hiring) (IT OR network OR teknisi OR helpdesk)`,
+    `${base} (renovasi OR "gedung baru" OR "cabang baru" OR ekspansi OR expansion) (wifi OR jaringan OR internet)`,
+    categoryQuery,
+  ];
+}
+
 /** Agen Finding 2: hanya mencari sumber publik lewat Exa; tidak membaca website. */
 async function runFindingSignalAgent(lead, env = {}, options = {}) {
   if (!clean(env.EXA_API_KEY)) {
@@ -622,23 +669,30 @@ async function runFindingSignalAgent(lead, env = {}, options = {}) {
     };
   }
 
-  const search = await exaSearch(
-    env,
-    `"${lead.name}" ${[lead.area, lead.city].filter(Boolean).join(" ")} kebutuhan internet, WiFi, jaringan, access point, Mikrotik, bandwidth, atau upgrade IT.`,
-    { numResults: 5 },
+  const queries = findingSearchQueries(lead);
+  const searches = await Promise.all(
+    queries.map((query) => exaSearch(env, query, { numResults: 4 })),
   );
   const results = [];
-  for (const result of search.results || []) {
-    const highlights = Array.isArray(result?.highlights) ? result.highlights : [];
-    const text = clean(
-      `${result?.title || ""} ${highlights.join(" ")} ${result?.url || ""}`,
-    );
-    if (!searchResultMatches(lead, text)) continue;
-    results.push({
-      text,
-      source: /linkedin\.com/i.test(result?.url || "") ? "LinkedIn/publik" : "sumber publik",
-      url: clean(result?.url),
-    });
+  const seen = new Set();
+  let firstError = "";
+  for (const search of searches) {
+    if (search.error && !firstError) firstError = search.error;
+    for (const result of search.results || []) {
+      const highlights = Array.isArray(result?.highlights) ? result.highlights : [];
+      const text = clean(
+        `${result?.title || ""} ${highlights.join(" ")} ${result?.url || ""}`,
+      );
+      if (!searchResultMatches(lead, text)) continue;
+      const key = clean(result?.url) || text.slice(0, 180);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      results.push({
+        text,
+        source: /linkedin\.com/i.test(result?.url || "") ? "LinkedIn/publik" : "sumber publik",
+        url: clean(result?.url),
+      });
+    }
   }
   return {
     id: "finding-signals",
@@ -646,21 +700,22 @@ async function runFindingSignalAgent(lead, env = {}, options = {}) {
     status: results.length > 0 ? "ok" : "empty",
     summary:
       results.length > 0
-        ? `${results.length} hasil publik relevan ditemukan lewat Exa.`
-        : "Exa tidak menemukan hasil publik yang relevan.",
-    evidence: results.slice(0, 3).map(
+        ? `${results.length} hasil relevan dari ${queries.length} query Exa.`
+        : `Exa tidak menemukan hasil relevan dari ${queries.length} query.`,
+    evidence: results.slice(0, 4).map(
       (result) => `${result.source}: ${result.url || result.text.slice(0, 120)}`,
     ),
     results,
-    error: search.error || "",
+    error: firstError,
   };
 }
 
 /** Agen Finding 3: hanya menilai hasil dua agen sebelumnya; tidak mengambil data baru. */
-function runFindingQualifierAgent(lead, profile, signal) {
+export function runFindingQualifierAgent(lead, profile, signal) {
   const base = lead.category === "hotel" ? 34 : lead.category === "school" ? 36 : 22;
   const evidence = [];
   const seen = new Set();
+  let strongCount = 0;
   let score = base;
 
   const scan = (text, source) => {
@@ -671,6 +726,7 @@ function runFindingQualifierAgent(lead, profile, signal) {
       if (!match) continue;
       seen.add(definition.id);
       score += definition.weight;
+      if (definition.strong) strongCount += 1;
       evidence.push(`${definition.label} — ${source} — ${excerptAround(text, match.index)}`);
     }
   };
@@ -681,7 +737,10 @@ function runFindingQualifierAgent(lead, profile, signal) {
   }
 
   score = Math.max(0, Math.min(100, score));
-  const qualified = evidence.length > 0 && score >= 48;
+  // Satu kata "wifi" di website bukan bukti kebutuhan upgrade. Minimal harus
+  // ada satu sinyal kuat (jaringan, upgrade, ekspansi, IT, digitalisasi, atau
+  // kebutuhan jaringan hotel) sebelum lead dianggap qualified.
+  const qualified = evidence.length > 0 && strongCount > 0 && score >= 48;
   const label =
     score >= 75
       ? "Kebutuhan kuat"
@@ -695,10 +754,11 @@ function runFindingQualifierAgent(lead, profile, signal) {
     id: "finding-qualifier",
     name: "Penilai Kebutuhan",
     status: "ok",
-    summary: `Skor ${score}/100 · ${label} · ${evidence.length} sinyal dari dua agen sebelumnya.`,
+    summary: `Skor ${score}/100 · ${label} · ${evidence.length} sinyal (${strongCount} kuat) dari dua agen sebelumnya.`,
     evidence: evidence.slice(0, 4),
     score,
     label,
+    strongCount,
     qualified,
     allEvidence: evidence,
   };
@@ -2013,7 +2073,7 @@ async function advanceJob(db, row, env, settings, ownerId) {
     if (stage === "finding") {
       const assessment = await assessNeed(lead, env, {
         exaSearch: true,
-        sitePages: 2,
+        sitePages: 8,
       });
       needScore = assessment.score;
       needLabel = assessment.label;
@@ -2055,7 +2115,7 @@ async function advanceJob(db, row, env, settings, ownerId) {
       }
       if (researched?.lead) lead = researched.lead;
       const validation = researched?.validation || {};
-      contactStatus = validation.status || "missing";
+      contactStatus = validation.contactStatus || validation.status || "missing";
       contactConfidence = Number(researched?.lead?.aiConfidence || 0);
       contactEvidence = Array.isArray(validation.evidence)
         ? validation.evidence
@@ -2087,9 +2147,10 @@ async function advanceJob(db, row, env, settings, ownerId) {
         };
       }
 
-      // Klarifikasi selesai bila sudah ada nama PIC + nomor valid. Stage
+      // Klarifikasi selesai bila nama PIC, nomor PIC, dan koordinat entitas
+      // benar-benar tervalidasi—bukan hanya karena field-nya terisi. Stage
       // berikutnya hanya mengirim Telegram; stage ini tidak menulis Prospek.
-      if (telegramLeadReady(lead)) {
+      if (telegramLeadReady(lead) && contactStatus === "verified") {
         found = true;
         stage = "publish_telegram";
         await updateJob(db, lead.id, {
@@ -2134,6 +2195,29 @@ async function advanceJob(db, row, env, settings, ownerId) {
     }
 
     if (stage === "publish_telegram") {
+      if (contactStatus !== "verified") {
+        attempts += 1;
+        const exhausted = attempts >= 3;
+        const nextStage = exhausted ? "paused" : "clarification";
+        await updateJob(db, lead.id, {
+          stage: nextStage,
+          status: exhausted ? "waiting" : "needs_validation",
+          contact_status: contactStatus || "partial",
+          contact_confidence: contactConfidence,
+          contact_evidence: JSON.stringify(contactEvidence),
+          attempts,
+          last_error:
+            "PIC, nomor PIC, atau koordinat entitas belum tervalidasi; lead dikembalikan ke Klarifikasi.",
+          next_run_at: exhausted ? addDays(1) : addHours(2),
+        });
+        return {
+          found: false,
+          published: 0,
+          prospectAdded: 0,
+          notified,
+          job: await readJob(db, lead.id),
+        };
+      }
       if (screeningReviewRequired(lead)) {
         await updateJob(db, lead.id, {
           stage: "paused",
@@ -2200,6 +2284,29 @@ async function advanceJob(db, row, env, settings, ownerId) {
     }
 
     if (stage === "publish_prospect") {
+      if (contactStatus !== "verified") {
+        attempts += 1;
+        const exhausted = attempts >= 3;
+        const nextStage = exhausted ? "paused" : "clarification";
+        await updateJob(db, lead.id, {
+          stage: nextStage,
+          status: exhausted ? "waiting" : "needs_validation",
+          contact_status: contactStatus || "partial",
+          contact_confidence: contactConfidence,
+          contact_evidence: JSON.stringify(contactEvidence),
+          attempts,
+          last_error:
+            "PIC, nomor PIC, atau koordinat entitas belum tervalidasi; lead dikembalikan ke Klarifikasi.",
+          next_run_at: exhausted ? addDays(1) : addHours(2),
+        });
+        return {
+          found: false,
+          published: 0,
+          prospectAdded: 0,
+          notified,
+          job: await readJob(db, lead.id),
+        };
+      }
       if (screeningReviewRequired(lead)) {
         await updateJob(db, lead.id, {
           stage: "paused",

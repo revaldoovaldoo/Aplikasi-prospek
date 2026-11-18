@@ -725,6 +725,12 @@ function citationForPerson(results, name) {
 
 async function runPanel(lead, env) {
   const prompt = panelPrompt(lead);
+  const decisionRoles =
+    lead.category === "hotel"
+      ? "IT Manager, Network Engineer, Chief Engineer, General Manager, atau pemilik/pengelola hotel"
+      : lead.category === "school"
+        ? "Kepala Sekolah, Wakil Kepala Sekolah, Kepala IT, Operator/Teknisi Jaringan, atau Kepala Laboratorium Komputer"
+        : "IT Manager, Kepala IT, Network Engineer, IT Support, General Manager, atau pemilik/pengelola perusahaan";
   const profilePromise = exaAnswer(env, {
     model: "exa-pro",
     query: `Cari profil resmi ${prompt}. Temukan website resmi, alamat lengkap, kota, dan koordinat lokasi. Prioritaskan website resmi, halaman kontak, Google Business, atau OpenStreetMap. Jangan memakai LinkedIn/Facebook/Instagram sebagai website resmi.`,
@@ -733,16 +739,16 @@ async function runPanel(lead, env) {
   });
   const contactPromise = exaAnswer(env, {
     model: "exa-pro",
-    query: `Cari PIC yang dapat mengambil keputusan di ${prompt}. Prioritas: IT Manager, Kepala IT, Network Engineer, General Manager, Chief Engineer, Kepala Sekolah, Wakil Kepala Sekolah, atau pimpinan operasional. Temukan nama lengkap, jabatan, e-mail, dan nomor telepon/WhatsApp yang dipublikasikan di website resmi, halaman tim, LinkedIn profesional publik, atau direktori bisnis.`,
-    systemPrompt: `${COMMON_RULES} Anda adalah Contact Finder: fokus pada orang yang tepat, jabatan, e-mail, dan nomor telepon. Jangan memakai data pribadi non-bisnis.`,
+    query: `Cari PIC yang dapat mengambil keputusan di ${prompt}. Prioritas: ${decisionRoles}. Temukan nama lengkap, jabatan, e-mail, dan nomor telepon/WhatsApp yang dipublikasikan di website resmi, halaman tim, LinkedIn profesional publik, atau direktori bisnis. Nomor PIC harus nomor yang secara eksplisit dihubungkan dengan nama/jabatan PIC; jangan memakai nomor kantor pusat, resepsionis, atau customer service jika ada nomor PIC langsung. Sebutkan sumber yang mendukung nama, jabatan, dan nomor tersebut.`,
+    systemPrompt: `${COMMON_RULES} Anda adalah Contact Finder: fokus pada orang yang tepat, jabatan, e-mail, dan nomor telepon. Jangan memakai data pribadi non-bisnis. Jangan mengarang atau menggabungkan nama dari satu sumber dengan nomor dari sumber lain tanpa bukti yang menghubungkannya.`,
     outputSchema: CONTACT_SCHEMA,
   });
   // Verifier berjalan bersamaan, bukan menunggu dua agen lain. Ia memeriksa
   // ulang sumber publik sendiri agar hasil tetap independen.
   const verifierPromise = exaAnswer(env, {
     model: "exa-pro",
-    query: `Lakukan verifikasi independen untuk ${prompt}. Temukan dan periksa langsung website resmi, nama PIC atau pimpinan yang mengambil keputusan, jabatan, e-mail, nomor telepon/WhatsApp, alamat, dan koordinat. Jangan mengandalkan ringkasan agen lain. Buang klaim tanpa sumber publik; tandai konflik dan isi kosong/0 bila tidak yakin.`,
-    systemPrompt: `${COMMON_RULES} Anda adalah Verifier independen. Bersikap skeptis, periksa sumber publik sendiri, dan hanya setujui data yang benar-benar didukung.`,
+    query: `Lakukan verifikasi independen untuk ${prompt}. Temukan dan periksa langsung website resmi, nama PIC atau pimpinan yang mengambil keputusan, jabatan, e-mail, nomor telepon/WhatsApp, alamat, dan koordinat. Prioritaskan ${decisionRoles}. Pastikan nomor telepon benar-benar milik PIC, bukan hanya nomor umum perusahaan. Jangan mengandalkan ringkasan agen lain. Buang klaim tanpa sumber publik; tandai konflik dan isi kosong/0 bila tidak yakin.`,
+    systemPrompt: `${COMMON_RULES} Anda adalah Verifier independen. Bersikap skeptis, periksa sumber publik sendiri, dan hanya setujui data yang benar-benar didukung. Tolak nama atau nomor yang hanya muncul di direktori tanpa bukti keterkaitan dengan entitas.`,
     outputSchema: VERIFIER_SCHEMA,
   });
 
@@ -856,7 +862,7 @@ export async function researchCorporateLead(db, leadId, env = {}) {
   let site = { pages: [], text: "" };
   if (website) {
     try {
-      site = await readPublicText(website, 3);
+      site = await readPublicText(website, 8);
     } catch {
       /* website tidak bisa dibaca; validasi akan gagal */
     }
@@ -937,8 +943,13 @@ export async function researchCorporateLead(db, leadId, env = {}) {
   const phoneInOfficialSource = tails.some((tail) =>
     officialDigits.includes(tail),
   );
+  // Nomor harus datang dari Contact Finder/Verifier (yang diminta mencari
+  // nomor PIC), bukan hanya nomor kantor yang kebetulan ada di lead lama.
+  const phoneFromPanel = Boolean(clean(verifier.phone || contact.phone));
   const phoneVerified = Boolean(
-    hasValidPhone(phone) && (phoneOnSite || phoneInOfficialSource),
+    hasValidPhone(phone) &&
+      phoneFromPanel &&
+      (phoneOnSite || phoneInOfficialSource),
   );
 
   const contactUrl =
@@ -954,9 +965,10 @@ export async function researchCorporateLead(db, leadId, env = {}) {
   const personOnSite = Boolean(
     personName && personNameOnSite(personName, evidenceText),
   );
+  const contactHost = hostOf(contactUrl);
   const personSourceUsable = Boolean(
     contactUrl &&
-      (hostOf(contactUrl) === siteHost || /linkedin\./i.test(contactUrl) || /^https?:/i.test(contactUrl)),
+      (contactHost === siteHost || /(^|\.)linkedin\.com$/i.test(contactHost)),
   );
   const personVerified = Boolean(
     personName && role && (personOnSite || personSourceUsable),
@@ -993,6 +1005,15 @@ export async function researchCorporateLead(db, leadId, env = {}) {
     coordinate = await geocodeAddress(
       db,
       address || `${lead.name}, ${lead.area ? `${lead.area}, ` : ""}${city}, Indonesia`,
+      lead.name,
+    );
+  }
+  // Alamat bisa terlalu umum (mis. hanya nama kota). Coba lagi dengan nama
+  // entitas + wilayah agar titik yang dipilih tetap milik entitas yang tepat.
+  if (!coordinate) {
+    coordinate = await geocodeAddress(
+      db,
+      `${lead.name}, ${lead.area ? `${lead.area}, ` : ""}${city}, Indonesia`,
       lead.name,
     );
   }
@@ -1060,6 +1081,14 @@ export async function researchCorporateLead(db, leadId, env = {}) {
     website || email || phone || personName || coordinate,
   );
   const status = fullyVerified ? "verified" : hasAnyEvidence ? "partial" : "missing";
+  // Status kontak sengaja dipisah dari kelengkapan e-mail/website. Untuk
+  // Publish, yang wajib adalah PIC + nomor PIC + titik koordinat yang tervalidasi.
+  const contactStatus =
+    personVerified && phoneVerified && locationVerified
+      ? "verified"
+      : hasAnyEvidence
+        ? "partial"
+        : "missing";
   const aiConfidence = panelConfidence || (fullyVerified ? 90 : 0);
 
   const evidence = [];
@@ -1084,6 +1113,9 @@ export async function researchCorporateLead(db, leadId, env = {}) {
   } else {
     evidence.push("Nomor PIC belum ditemukan pada website/sumber resmi.");
   }
+  evidence.push(
+    `Status validasi kontak PIC/koordinat: ${contactStatus}.`,
+  );
   if (personVerified) {
     evidence.push(
       `PIC ${personName}${role ? ` — ${role}` : ""} ditemukan pada sumber publik.`,
@@ -1194,6 +1226,7 @@ export async function researchCorporateLead(db, leadId, env = {}) {
     },
     validation: {
       status,
+      contactStatus,
       websiteVerified,
       emailVerified,
       phoneVerified,

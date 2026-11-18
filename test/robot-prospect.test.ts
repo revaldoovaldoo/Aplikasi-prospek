@@ -5,8 +5,10 @@ import {
   backfillCorporateScreening,
   auditTelegramProspects,
   buildTelegramMessage,
+  findingSearchQueries,
   publishLeadToProspect,
   reconcileTelegramProspects,
+  runFindingQualifierAgent,
 } from "../worker/robot.js";
 import {
   isCorporateLeadAddable,
@@ -15,6 +17,46 @@ import {
   scrubRobotCompanyCoordinates,
   syncRobotCompanies,
 } from "../src/lib/corporate.ts";
+
+test("Finding memakai query upgrade dan query khusus kategori", () => {
+  const hotel = findingSearchQueries({
+    name: "Hotel Contoh",
+    city: "Jakarta",
+    category: "hotel",
+  });
+  const school = findingSearchQueries({
+    name: "SMA Contoh",
+    city: "Depok",
+    category: "school",
+  });
+  assert.equal(hotel.length, 4);
+  assert.match(hotel.join(" "), /upgrade|peningkatan|pengadaan/i);
+  assert.match(hotel.join(" "), /meeting room|ballroom|property management/i);
+  assert.match(school.join(" "), /lab komputer|CBT|smart school/i);
+});
+
+test("Penilai kebutuhan tidak meloloskan hotel hanya karena menyebut wifi", () => {
+  const result = runFindingQualifierAgent(
+    { category: "hotel" },
+    { text: "Hotel menyediakan wifi gratis untuk tamu di seluruh area." },
+    { results: [] },
+  );
+  assert.equal(result.strongCount, 0);
+  assert.equal(result.qualified, false);
+});
+
+test("Penilai kebutuhan meloloskan sinyal upgrade jaringan yang kuat", () => {
+  const result = runFindingQualifierAgent(
+    { category: "hotel" },
+    {
+      text: "Rencana upgrade access point dan bandwidth untuk meeting room serta ballroom.",
+    },
+    { results: [] },
+  );
+  assert.ok(result.strongCount >= 1);
+  assert.equal(result.qualified, true);
+  assert.ok(result.score >= 48);
+});
 
 test("Kurir Telegram menolak nama resepsionis, placeholder, dan beberapa nama", () => {
   const base = {
