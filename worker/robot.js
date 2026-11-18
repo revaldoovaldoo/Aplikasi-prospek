@@ -1940,6 +1940,22 @@ export async function publishLeadToProspect(db, ownerId, lead) {
           : [],
     validatedAt: lead.validatedAt || clean(prior.validatedAt) || now,
     aiConfidence: Number(lead.aiConfidence || prior.aiConfidence || 0),
+    // Simpan hasil screening bersama record Prospek. Tanpa ini, audit ulang
+    // terhadap record hasil Publish selalu gagal gate screening karena
+    // statusnya tidak pernah ikut tersimpan, bukan karena lead berisiko.
+    screeningStatus: clean(lead.screeningStatus) || clean(prior.screeningStatus),
+    screeningEvidence:
+      Array.isArray(lead.screeningEvidence) && lead.screeningEvidence.length
+        ? lead.screeningEvidence
+        : Array.isArray(prior.screeningEvidence)
+          ? prior.screeningEvidence
+          : [],
+    screeningCheckedAt:
+      clean(lead.screeningCheckedAt) || clean(prior.screeningCheckedAt),
+    screeningReviewedAt:
+      clean(lead.screeningReviewedAt) || clean(prior.screeningReviewedAt),
+    screeningReviewedBy:
+      clean(lead.screeningReviewedBy) || clean(prior.screeningReviewedBy),
     source: "Corporate Engine · Robot AI",
     sourceLeadId: lead.id,
   };

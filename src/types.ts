@@ -21,6 +21,12 @@ export interface Company {
   validationEvidence?: string[];
   validatedAt?: string;
   aiConfidence?: number;
+  /** Hasil screening OpenSanctions ikut disimpan agar record bisa diaudit ulang. */
+  screeningStatus?: string;
+  screeningEvidence?: string[];
+  screeningCheckedAt?: string;
+  screeningReviewedAt?: string;
+  screeningReviewedBy?: string;
   visitDate: string; // yyyy-mm-dd, "" bila belum visit
   createdAt: string;
   /** Pembatalan di tingkat perusahaan, dipakai bila belum ada PDF penawaran. */

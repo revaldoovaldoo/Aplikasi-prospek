@@ -1129,6 +1129,39 @@ test("publish menolak bukti satu halaman yang menyebut orang lain", async () => 
   });
 });
 
+test("Publish menyimpan hasil screening sehingga record bisa diaudit ulang", async () => {
+  const quotaLead = {
+    ...publishReadyLead,
+    screeningStatus: "error",
+    screeningEvidence: ["OpenSanctions HTTP 402: kuota/billing API habis."],
+    screeningCheckedAt: "2026-11-18T06:00:00.000Z",
+  };
+  const db = emptyProspectDb();
+  const first = await publishLeadToProspect(db, "owner-1", quotaLead as never);
+  assert.equal(first.added, true, first.reason);
+  const saved = JSON.parse(db.state.payload).companies[0];
+  assert.equal(saved.screeningStatus, "error");
+  assert.match(saved.screeningEvidence[0], /402/);
+  // Audit ulang memakai fungsi gate yang sama terhadap record yang tersimpan.
+  const auditDb = emptyProspectDb();
+  const audit = await publishLeadToProspect(auditDb, "owner-1", {
+    id: saved.sourceLeadId,
+    name: saved.name,
+    email: saved.email,
+    phone: saved.picPhone,
+    contactName: saved.contactName,
+    contactRole: saved.contactRole,
+    latitude: saved.latitude,
+    longitude: saved.longitude,
+    coordinateSource: saved.coordinateSource,
+    validationStatus: saved.validationStatus,
+    validationEvidence: saved.validationEvidence,
+    screeningStatus: saved.screeningStatus,
+    screeningEvidence: saved.screeningEvidence,
+  } as never);
+  assert.equal(audit.added, true, audit.reason);
+});
+
 test("lead dengan review OpenSanctions belum dikonfirmasi ditahan dari Prospek", () => {
   const lead = {
     name: "Hotel Contoh",
