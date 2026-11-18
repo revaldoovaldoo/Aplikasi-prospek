@@ -2,10 +2,12 @@ import type { Company, Database } from "../types";
 
 export const CORPORATE_CITIES = [
   "Jakarta",
+  "Kepulauan Seribu",
   "Depok",
   "Bekasi",
   "Kota Bogor",
   "Kab. Bogor",
+  "Gunung Sindur",
   "Tangerang",
   "Serang",
   "Subang",
@@ -14,25 +16,25 @@ export const CORPORATE_CITIES = [
   "Cipanas",
   "Kab. Cianjur",
   "Kab. Lebak",
-  "Gunung Sindur",
 ];
 
 /** Bbox yang sama dengan worker agar status koordinat konsisten di kedua sisi. */
 const CORPORATE_CITY_BOUNDS: Record<string, [number, number, number, number]> = {
   Jakarta: [-6.37, 106.68, -6.08, 106.97],
+  "Kepulauan Seribu": [-5.99, 106.33, -5.1, 106.66],
   Depok: [-6.49, 106.72, -6.33, 106.9],
   Bekasi: [-6.38, 106.95, -6.18, 107.16],
   "Kota Bogor": [-6.66, 106.7, -6.52, 106.87],
-  "Kab. Bogor": [-6.78, 106.4, -6.43, 107.06],
-  Tangerang: [-6.33, 106.53, -6.0, 106.79],
-  Serang: [-6.22, 106.02, -5.98, 106.3],
-  Subang: [-6.75, 107.3, -6.2, 107.85],
-  "Kota Sukabumi": [-6.96, 106.89, -6.88, 106.96],
-  "Kab. Sukabumi": [-7.35, 106.4, -6.72, 107.25],
-  Cipanas: [-6.75, 106.98, -6.65, 107.09],
-  "Kab. Cianjur": [-7.47, 106.72, -6.65, 107.45],
-  "Kab. Lebak": [-7.05, 105.95, -6.35, 106.65],
+  "Kab. Bogor": [-6.81, 106.36, -6.33, 107.08],
   "Gunung Sindur": [-6.44, 106.67, -6.34, 106.79],
+  Tangerang: [-6.42, 106.34, -5.92, 106.8],
+  Serang: [-6.32, 105.83, -5.86, 106.36],
+  Subang: [-6.77, 107.22, -6.12, 107.92],
+  "Kota Sukabumi": [-6.96, 106.89, -6.88, 106.96],
+  "Kab. Sukabumi": [-7.36, 106.38, -6.7, 106.98],
+  Cipanas: [-6.76, 106.97, -6.64, 107.1],
+  "Kab. Cianjur": [-7.52, 106.7, -6.64, 107.56],
+  "Kab. Lebak": [-7.1, 105.9, -6.32, 106.62],
 };
 
 function regionNameKey(value?: string): string {
@@ -43,15 +45,27 @@ function regionNameKey(value?: string): string {
     .trim();
 }
 
+const REGION_ALIASES: Record<string, string> = {
+  tangsel: "tangerang",
+  "tangerang selatan": "tangerang",
+  "south tangerang": "tangerang",
+  cilegon: "serang",
+};
+
+function regionAliasKey(value?: string): string {
+  const key = regionNameKey(value);
+  return REGION_ALIASES[key] || key;
+}
+
 function regionsForLocation(city?: string, area?: string): string[] {
   const target = String(city || "").trim().toLowerCase();
   const areaText = String(area || "").trim().toLowerCase();
-  const targetKey = regionNameKey(city);
-  const areaKey = regionNameKey(area);
+  const targetKey = regionAliasKey(city);
+  const areaKey = regionAliasKey(area);
   const regions = [
     CORPORATE_CITIES.find((name) => name.toLowerCase() === target),
-    CORPORATE_CITIES.find((name) => regionNameKey(name) === targetKey),
-    CORPORATE_CITIES.find((name) => regionNameKey(name) === areaKey),
+    CORPORATE_CITIES.find((name) => regionAliasKey(name) === targetKey),
+    CORPORATE_CITIES.find((name) => regionAliasKey(name) === areaKey),
     CORPORATE_CITIES.find((name) => target.includes(name.toLowerCase())),
     CORPORATE_CITIES.find((name) => areaText.includes(name.toLowerCase())),
   ].filter((name): name is string => Boolean(name));

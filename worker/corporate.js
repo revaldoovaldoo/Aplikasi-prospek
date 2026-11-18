@@ -6,23 +6,33 @@
 
 import { selectPicPhone } from "./phone.js";
 
+/**
+ * Bbox mencakup seluruh batas administratif wilayah, bukan hanya pusat kota.
+ * Bila dua bbox beririsan (Gunung Sindur di dalam Kab. Bogor, Cipanas di dalam
+ * Kab. Cianjur), lead disimpan pada wilayah dengan bbox terkecil agar label
+ * wilayah fokus tidak hilang.
+ */
 export const CORPORATE_CITIES = [
   { name: "Jakarta", bbox: [-6.37, 106.68, -6.08, 106.97] },
+  // Administratif bagian DKI Jakarta; bbox terpisah agar tidak menarik
+  // entitas Tangerang/Bekasi lewat laut.
+  { name: "Kepulauan Seribu", bbox: [-5.99, 106.33, -5.1, 106.66] },
   { name: "Depok", bbox: [-6.49, 106.72, -6.33, 106.9] },
   { name: "Bekasi", bbox: [-6.38, 106.95, -6.18, 107.16] },
   { name: "Kota Bogor", bbox: [-6.66, 106.7, -6.52, 106.87] },
-  { name: "Kab. Bogor", bbox: [-6.78, 106.4, -6.43, 107.06] },
-  { name: "Tangerang", bbox: [-6.33, 106.53, -6.0, 106.79] },
-  { name: "Serang", bbox: [-6.22, 106.02, -5.98, 106.3] },
-  { name: "Subang", bbox: [-6.75, 107.3, -6.2, 107.85] },
-  { name: "Kota Sukabumi", bbox: [-6.96, 106.89, -6.88, 106.96] },
-  { name: "Kab. Sukabumi", bbox: [-7.35, 106.4, -6.72, 107.25] },
-  // Wilayah fokus tambahan. "Cipanas" didahulukan agar lead di kawasan
-  // Puncak-Cianjur tercatat sebagai Cipanas, bukan Kab. Cianjur.
-  { name: "Cipanas", bbox: [-6.75, 106.98, -6.65, 107.09] },
-  { name: "Kab. Cianjur", bbox: [-7.47, 106.72, -6.65, 107.45] },
-  { name: "Kab. Lebak", bbox: [-7.05, 105.95, -6.35, 106.65] },
+  // Utara Kab. Bogor (Parung, Gunung Sindur, Ciseeng) sebelumnya di luar bbox.
+  { name: "Kab. Bogor", bbox: [-6.81, 106.36, -6.33, 107.08] },
   { name: "Gunung Sindur", bbox: [-6.44, 106.67, -6.34, 106.79] },
+  // Seluruh area Tangerang: Kota, Kabupaten, dan Tangerang Selatan.
+  { name: "Tangerang", bbox: [-6.42, 106.34, -5.92, 106.8] },
+  // Seluruh area Serang: Kota, Kabupaten (termasuk Anyer/Cinangka), Cilegon.
+  { name: "Serang", bbox: [-6.32, 105.83, -5.86, 106.36] },
+  { name: "Subang", bbox: [-6.77, 107.22, -6.12, 107.92] },
+  { name: "Kota Sukabumi", bbox: [-6.96, 106.89, -6.88, 106.96] },
+  { name: "Kab. Sukabumi", bbox: [-7.36, 106.38, -6.7, 106.98] },
+  { name: "Cipanas", bbox: [-6.76, 106.97, -6.64, 107.1] },
+  { name: "Kab. Cianjur", bbox: [-7.52, 106.7, -6.64, 107.56] },
+  { name: "Kab. Lebak", bbox: [-7.1, 105.9, -6.32, 106.62] },
 ];
 
 /**
@@ -51,9 +61,25 @@ function regionNameKey(value) {
     .trim();
 }
 
+/**
+ * Nama populer yang tidak mengandung nama wilayah resmi, mis. "Tangsel".
+ * Tanpa alias ini lead sah dari Tangerang Selatan tidak dikenali wilayahnya.
+ */
+const REGION_ALIASES = {
+  tangsel: "tangerang",
+  "tangerang selatan": "tangerang",
+  "south tangerang": "tangerang",
+  cilegon: "serang",
+};
+
+function regionAliasKey(value) {
+  const key = regionNameKey(value);
+  return REGION_ALIASES[key] || key;
+}
+
 function regionByName(value) {
   const target = clean(value).toLowerCase();
-  const targetKey = regionNameKey(value);
+  const targetKey = regionAliasKey(value);
   if (!target) return null;
   // Data lama menyimpan "Sukabumi" tanpa membedakan kota dan kabupaten.
   if (targetKey === "sukabumi") {
@@ -61,7 +87,7 @@ function regionByName(value) {
   }
   return (
     CORPORATE_CITIES.find((city) => city.name.toLowerCase() === target) ||
-    CORPORATE_CITIES.find((city) => regionNameKey(city.name) === targetKey) ||
+    CORPORATE_CITIES.find((city) => regionAliasKey(city.name) === targetKey) ||
     CORPORATE_CITIES.find((city) => target.includes(city.name.toLowerCase())) ||
     null
   );
@@ -1027,11 +1053,28 @@ export async function readCorporateLeads(db, seed) {
   // Bbox wilayah fokus saling beririsan (mis. Cipanas di dalam Kab. Cianjur,
   // Gunung Sindur di utara Kab. Bogor). Satu elemen OSM tidak boleh muncul dua
   // kali di daftar lead; urutan CORPORATE_CITIES menentukan label wilayahnya.
-  const seenLeadIds = new Set();
+  // Satu elemen OSM tidak boleh muncul dua kali karena bbox beririsan.
+  // Wilayah dengan bbox terkecil dianggap paling spesifik, sehingga lead di
+  // Gunung Sindur tetap berlabel Gunung Sindur (bukan Kab. Bogor) dan lead di
+  // Cipanas tetap berlabel Cipanas (bukan Kab. Cianjur).
+  const leadById = new Map();
+  const cityArea = new Map(
+    CORPORATE_CITIES.map((city) => [
+      city.name,
+      Math.abs((city.bbox[2] - city.bbox[0]) * (city.bbox[3] - city.bbox[1])),
+    ]),
+  );
   const pushUniqueLead = (lead) => {
-    if (seenLeadIds.has(lead.id)) return;
-    seenLeadIds.add(lead.id);
-    leads.push(lead);
+    const area = cityArea.get(lead.city) ?? Number.POSITIVE_INFINITY;
+    const existing = leadById.get(lead.id);
+    if (!existing) {
+      leadById.set(lead.id, { lead, area });
+      return;
+    }
+    if (area < existing.area) {
+      existing.lead = lead;
+      existing.area = area;
+    }
   };
   const cities = CORPORATE_CITIES.map((city) => {
     const updatedAt = refreshed.get(city.name) ?? seed.generatedAt;
@@ -1054,6 +1097,7 @@ export async function readCorporateLeads(db, seed) {
     }
     return { name: city.name, updatedAt };
   });
+  for (const entry of leadById.values()) leads.push(entry.lead);
 
   return {
     leads,

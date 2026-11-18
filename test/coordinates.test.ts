@@ -179,6 +179,7 @@ test("seluruh wilayah fokus tersedia di worker dan UI", () => {
   const workerNames = workerCityRegions.map((region: { name: string }) => region.name);
   const required = [
     "Jakarta",
+    "Kepulauan Seribu",
     "Kota Bogor",
     "Kab. Bogor",
     "Kota Sukabumi",
@@ -215,6 +216,68 @@ test("koordinat Cianjur, Cipanas, Lebak, dan Gunung Sindur dikenali", () => {
   assert.equal(workerCoordinateInRegion("Lebak", undefined, -6.4, 106.25), true);
   assert.equal(clientCoordinateInRegion(undefined, "Kec. Gunung Sindur", -6.39, 106.73), true);
   assert.equal(workerCoordinateInRegion(undefined, "Kecamatan Cipanas", -6.705, 107.04), true);
+});
+
+/**
+ * Cakupan wilayah misi: setiap sudut administratif harus berada di dalam
+ * bbox salah satu wilayah. Tes ini gagal bila sebuah wilayah dihapus dari
+ * daftar atau bbox-nya menyempit sehingga sebagian wilayah terlewat.
+ */
+const MISSION_AREA_SAMPLES: Array<[string, string, number, number]> = [
+  ["Kota Bogor", "Bogor Tengah", -6.595, 106.816],
+  ["Kab. Bogor", "Cibinong", -6.481, 106.854],
+  ["Kab. Bogor", "Parung", -6.421, 106.733],
+  ["Kab. Bogor", "Jasinga", -6.472, 106.455],
+  ["Gunung Sindur", "Gunung Sindur", -6.39, 106.73],
+  ["Cipanas", "Cipanas", -6.705, 107.04],
+  ["Kab. Cianjur", "Cianjur", -6.82, 107.14],
+  ["Kab. Cianjur", "Cidaun", -7.44, 107.42],
+  ["Kab. Lebak", "Rangkasbitung", -6.36, 106.25],
+  ["Kab. Lebak", "Bayah", -6.94, 106.25],
+  ["Kota Sukabumi", "Sukabumi", -6.92, 106.93],
+  ["Kab. Sukabumi", "Pelabuhanratu", -6.99, 106.55],
+  ["Kab. Sukabumi", "Ujung Genteng", -7.35, 106.45],
+  ["Depok", "Beji", -6.39, 106.82],
+  ["Tangerang", "Kota Tangerang", -6.18, 106.63],
+  ["Tangerang", "Kab. Tangerang", -6.3, 106.55],
+  ["Tangerang", "Tangerang Selatan", -6.36, 106.71],
+  ["Tangerang", "Teluknaga", -6.03, 106.45],
+  ["Jakarta", "Jakarta Pusat", -6.18, 106.83],
+  ["Jakarta", "Jakarta Utara", -6.12, 106.88],
+  ["Kepulauan Seribu", "Pulau Pramuka", -5.745, 106.61],
+  ["Serang", "Kota Serang", -6.12, 106.15],
+  ["Serang", "Kab. Serang", -6.2, 106.2],
+  ["Serang", "Anyer", -6.05, 105.9],
+  ["Serang", "Cilegon", -6.02, 106.05],
+  ["Subang", "Subang", -6.57, 107.76],
+  ["Subang", "Pamanukan", -6.21, 107.81],
+];
+
+test("seluruh wilayah misi tercakup bbox worker dan UI", () => {
+  for (const [city, area, latitude, longitude] of MISSION_AREA_SAMPLES) {
+    assert.equal(
+      workerCoordinateInRegion(city, area, latitude, longitude),
+      true,
+      `${area} (${city}) di luar cakupan worker`,
+    );
+    assert.equal(
+      clientCoordinateInRegion(city, area, latitude, longitude),
+      true,
+      `${area} (${city}) di luar cakupan UI`,
+    );
+  }
+});
+
+test("alias wilayah populer dikenali sebagai wilayah misi", () => {
+  // Nama populer tanpa nama wilayah resmi tidak boleh membuang lead sah.
+  for (const [alias, latitude, longitude] of [
+    ["Tangsel", -6.36, 106.71],
+    ["Tangerang Selatan", -6.36, 106.71],
+    ["Cilegon", -6.02, 106.05],
+  ] as Array<[string, number, number]>) {
+    assert.equal(workerCoordinateInRegion(alias, alias, latitude, longitude), true, alias);
+    assert.equal(clientCoordinateInRegion(alias, alias, latitude, longitude), true, alias);
+  }
 });
 
 test("format koordinat kosong tidak menampilkan nol", () => {
