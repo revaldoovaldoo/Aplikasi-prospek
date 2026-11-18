@@ -47,6 +47,11 @@ import {
 
 const ROBOT_INTERVAL_MS = 15 * 60 * 1000;
 const ROBOT_LOCK_MS = 10 * 60 * 1000;
+// Saat tidak ada antrean, pemeliharaan (perbaikan koordinat, screening,
+// rekonsiliasi Prospek) cukup sekali sejam. Tanpa ini setiap tick 15 menit
+// tetap menulis baris run dan meta meski tidak ada yang berubah.
+const ROBOT_MAINTENANCE_MS = 60 * 60 * 1000;
+const ROBOT_SCHEMA_VERSION = "3";
 const DEFAULT_TELEGRAM_PHONE = "+6285156590261";
 const MAX_APP_STATE_CHARS = 1_500_000;
 
@@ -278,6 +283,16 @@ let robotSchemaPromise;
 export async function ensureRobotSchema(db) {
   if (!robotSchemaPromise) {
     robotSchemaPromise = (async () => {
+      // Penanda versi mencegah CREATE/ALTER/INDEX dijalankan ulang setiap
+      // isolate dingin; pernyataan DDL ikut dihitung sebagai penulisan.
+      try {
+        const marker = await db
+          .prepare("SELECT value FROM corporate_meta WHERE key = 'robot_schema_version'")
+          .first();
+        if (marker?.value === ROBOT_SCHEMA_VERSION) return;
+      } catch {
+        /* tabel corporate_meta belum ada */
+      }
       for (const sql of ROBOT_SCHEMA_SQL) {
         await db.prepare(sql).run();
       }
@@ -304,6 +319,16 @@ export async function ensureRobotSchema(db) {
            ON corporate_telegram_outbox (status, next_attempt_at, created_at)`,
         )
         .run();
+      try {
+        await db
+          .prepare(
+            "INSERT INTO corporate_meta (key, value) VALUES ('robot_schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+          )
+          .bind(ROBOT_SCHEMA_VERSION)
+          .run();
+      } catch {
+        /* penanda opsional */
+      }
     })().catch((error) => {
       robotSchemaPromise = undefined;
       throw error;
@@ -384,12 +409,56 @@ async function readMeta(db, key) {
 }
 
 async function writeMeta(db, key, value) {
+  // WHERE pada DO UPDATE membuat penulisan dilewati bila nilainya sama,
+  // sehingga meta yang ditulis tiap tick tidak membakar kuota saat statis.
   await db
     .prepare(
-      "INSERT INTO corporate_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+      "INSERT INTO corporate_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value WHERE excluded.value <> corporate_meta.value",
     )
     .bind(key, value)
     .run();
+}
+
+/**
+ * Hitung pekerjaan yang benar-benar jatuh tempo. Dipakai agar tick robot tidak
+ * menulis apa pun saat antrean, outbox, dan screening sudah kosong.
+ */
+export async function robotDueWorkCounts(db, env = {}) {
+  const now = nowIso();
+  try {
+    const jobs = await db
+      .prepare(
+        "SELECT COUNT(*) AS total FROM corporate_robot_jobs WHERE status IN ('queued', 'ready_to_publish') AND (next_run_at = '' OR next_run_at <= ?)",
+      )
+      .bind(now)
+      .first();
+    const outbox = await db
+      .prepare(
+        "SELECT COUNT(*) AS total FROM corporate_telegram_outbox WHERE status IN ('pending', 'failed') AND (next_attempt_at = '' OR next_attempt_at <= ?)",
+      )
+      .bind(now)
+      .first();
+    let screening = 0;
+    if (opensanctionsConfigured(env)) {
+      const cooldown = await opensanctionsQuotaCooldown(db);
+      if (!cooldown.blocked) {
+        const row = await db
+          .prepare(
+            "SELECT COUNT(*) AS total FROM corporate_leads WHERE screening_status = '' AND screening_reviewed_at = ''",
+          )
+          .first();
+        screening = Number(row?.total || 0);
+      }
+    }
+    return {
+      jobs: Number(jobs?.total || 0),
+      outbox: Number(outbox?.total || 0),
+      screening,
+    };
+  } catch {
+    // Gagal membaca antrean tidak boleh mematikan robot: anggap ada kerja.
+    return { jobs: 1, outbox: 0, screening: 0 };
+  }
 }
 
 async function readJob(db, leadId) {
@@ -3184,6 +3253,38 @@ export async function runCorporateRobot(db, env = {}, options = {}) {
     }
   }
 
+  // Tick tanpa antrean tidak perlu menulis baris run, meta, atau skema.
+  // Pemeliharaan (perbaikan koordinat, screening, rekonsiliasi Prospek) tetap
+  // berjalan, tetapi cukup sekali sejam agar kuota punya sisa aman.
+  const requestedLeadIds = (Array.isArray(options.leadIds) ? options.leadIds : [])
+    .map((id) => clean(String(id || "")))
+    .filter(Boolean)
+    .slice(0, 12);
+  let maintenanceOnly = false;
+  if (requestedLeadIds.length === 0) {
+    const due = await robotDueWorkCounts(db, env);
+    if (due.jobs + due.outbox + due.screening === 0) {
+      const lastMaintenance = await readMeta(db, "robot_last_maintenance");
+      const age = lastMaintenance ? Date.now() - Date.parse(lastMaintenance) : NaN;
+      if (Number.isFinite(age) && age >= 0 && age < ROBOT_MAINTENANCE_MS) {
+        return {
+          skipped: true,
+          reason: "Tidak ada antrean jatuh tempo; pemeliharaan berikutnya dalam 1 jam.",
+          checked: 0,
+          found: 0,
+          published: 0,
+          prospectAdded: 0,
+          notified: 0,
+          whatsappSent: 0,
+          remaining: 0,
+          updated: [],
+          status: await getRobotStatus(db, env, ownerId),
+        };
+      }
+      maintenanceOnly = true;
+    }
+  }
+
   const startedAt = nowIso();
   const runId = crypto.randomUUID();
   await writeMeta(db, "robot_running_at", startedAt);
@@ -3406,6 +3507,9 @@ export async function runCorporateRobot(db, env = {}, options = {}) {
       .bind(runId, startedAt, finishedAt, checked, found, published, notified, lastError)
       .run();
     await writeMeta(db, "robot_last_run", finishedAt);
+    if (maintenanceOnly) {
+      await writeMeta(db, "robot_last_maintenance", finishedAt).catch(() => undefined);
+    }
 
     const remainingRow = await db
       .prepare(

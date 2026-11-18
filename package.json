@@ -10,7 +10,7 @@
     "build:site": "npm run build && npm run build:worker",
     "dev:worker": "wrangler dev --config wrangler.local.jsonc",
     "preview": "vite preview",
-    "test": "node --experimental-strip-types --test test/corporate.test.js test/coordinates.test.ts test/send.test.ts test/leader.test.ts test/outbox.test.ts test/opensanctions.test.ts test/quote-number.test.ts test/robot-prospect.test.ts test/whatsapp-agent.test.ts test/whatsapp-ai.test.ts test/whatsapp.test.ts"
+    "test": "node --experimental-strip-types --test test/corporate.test.js test/coordinates.test.ts test/send.test.ts test/leader.test.ts test/outbox.test.ts test/opensanctions.test.ts test/quote-number.test.ts test/robot-prospect.test.ts test/robot-writes.test.js test/whatsapp-agent.test.ts test/whatsapp-ai.test.ts test/whatsapp.test.ts"
   },
   "dependencies": {
     "@freebuff/auth": "^0.1.0",
