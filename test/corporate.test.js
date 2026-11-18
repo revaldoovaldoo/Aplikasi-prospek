@@ -104,6 +104,28 @@ test("label wilayah dipilih dari bukti, bukan urutan refresh", () => {
   );
 });
 
+test("urutan refresh tidak mengubah label wilayah lead", () => {
+  const lead = { area: "", latitude: -6.99, longitude: 106.55 };
+  // Refresh Kab. Sukabumi dulu, lalu Kab. Cianjur yang bbox-nya beririsan.
+  const forward = chooseLeadCity(lead, [
+    chooseLeadCity(lead, ["Kab. Sukabumi"]),
+    "Kab. Cianjur",
+  ]);
+  assert.equal(forward, "Kab. Sukabumi");
+  // Urutan sebaliknya harus menghasilkan label yang sama.
+  const reverse = chooseLeadCity(lead, [
+    chooseLeadCity(lead, ["Kab. Cianjur"]),
+    "Kab. Sukabumi",
+  ]);
+  assert.equal(reverse, "Kab. Sukabumi");
+  // Lead di Jakarta tidak boleh berpindah hanya karena Bekasi di-refresh nanti.
+  const jakarta = { area: "", latitude: -6.18, longitude: 106.83 };
+  assert.equal(
+    chooseLeadCity(jakarta, [chooseLeadCity(jakarta, ["Jakarta"]), "Bekasi"]),
+    "Jakarta",
+  );
+});
+
 test("label wilayah selalu wilayah yang memuat koordinat lead", () => {
   const samples = [
     { area: "Bogor Tengah", latitude: -6.595, longitude: 106.816 },
