@@ -77,6 +77,24 @@ function regionAliasKey(value) {
   return REGION_ALIASES[key] || key;
 }
 
+/**
+ * Prefiks "Kota"/"Kabupaten" harus dihormati: "Kabupaten Bogor" bukan
+ * "Kota Bogor", meski kunci namanya sama. Tanpa ini area Kab. Bogor bisa
+ * dianggap milik Kota Bogor dan label wilayah menjadi salah.
+ */
+function regionByPrefix(value) {
+  const text = clean(value);
+  const prefix = /^(kota|kabupaten|kab\.?)\s+/i.exec(text);
+  if (!prefix) return null;
+  const kind = /^kota/i.test(prefix[1]) ? "Kota" : "Kab.";
+  const key = regionNameKey(text);
+  return (
+    CORPORATE_CITIES.find(
+      (city) => city.name.startsWith(kind) && regionNameKey(city.name) === key,
+    ) || null
+  );
+}
+
 function regionByName(value) {
   const target = clean(value).toLowerCase();
   const targetKey = regionAliasKey(value);
@@ -87,6 +105,8 @@ function regionByName(value) {
   if (targetKey === "sukabumi" && !/^(?:kota|kabupaten|kab\.?)\s+/i.test(clean(value))) {
     return CORPORATE_CITIES.find((city) => city.name === "Kab. Sukabumi");
   }
+  const prefixed = regionByPrefix(value);
+  if (prefixed) return prefixed;
   return (
     CORPORATE_CITIES.find((city) => city.name.toLowerCase() === target) ||
     CORPORATE_CITIES.find((city) => regionAliasKey(city.name) === targetKey) ||
@@ -395,7 +415,7 @@ const USER_AGENT =
 const REFRESH_MIN_MS = 30 * 60 * 1000;
 // Naikkan versi ini bila cara membaca data OSM berubah (mis. perbaikan
 // koordinat), agar cache lama otomatis ditarik ulang, bukan dianggap segar.
-const REFRESH_DATA_VERSION = 2;
+const REFRESH_DATA_VERSION = 3;
 const FETCH_TIMEOUT_MS = 25000;
 
 const SCHEMA_SQL = [
@@ -1078,10 +1098,7 @@ export async function readCorporateLeads(db, seed) {
   // Cipanas tetap berlabel Cipanas (bukan Kab. Cianjur).
   const leadById = new Map();
   const cityByNameForRank = new Map(CORPORATE_CITIES.map((city) => [city.name, city]));
-  const better = (left, right) => {
-    if (left[0] !== right[0]) return left[0] < right[0];
-    return left[1] < right[1];
-  };
+  const better = regionRankBetter;
   const pushUniqueLead = (lead) => {
     const city = cityByNameForRank.get(lead.city);
     if (!city) return;
@@ -2434,12 +2451,52 @@ export async function enrichCorporateLead(db, id, env = {}) {
  * agar wilayah fokus (Gunung Sindur, Cipanas) tidak tertelan wilayah besar.
  */
 export function regionCandidateRank(lead, city) {
+  const latitude = Number(lead?.latitude);
+  const longitude = Number(lead?.longitude);
+  const hasCoordinate =
+    Number.isFinite(latitude) &&
+    Number.isFinite(longitude) &&
+    latitude !== 0 &&
+    longitude !== 0;
+  // Bukti terkuat: titik entitas benar-benar berada di bbox wilayah itu.
+  const contains = hasCoordinate
+    ? coordinateInRegion(city.name, lead?.area, latitude, longitude, 0.02) === true
+      ? 0
+      : 1
+    : 1;
   const areaRegion = regionByName(lead?.area);
   const areaMatch = areaRegion && areaRegion.name === city.name ? 0 : 1;
   const size = Math.abs(
     (city.bbox[2] - city.bbox[0]) * (city.bbox[3] - city.bbox[1]),
   );
-  return [areaMatch, size];
+  return [contains, areaMatch, size];
+}
+
+function regionRankBetter(left, right) {
+  for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
+    if ((left[index] ?? 0) !== (right[index] ?? 0)) {
+      return (left[index] ?? 0) < (right[index] ?? 0);
+    }
+  }
+  return false;
+}
+
+/**
+ * Pilih satu label wilayah untuk sebuah lead dari kandidat yang tersedia,
+ * memakai bukti yang sama seperti dedupe: koordinat, lalu area alamat, lalu
+ * bbox paling spesifik. Dipakai saat menulis hasil refresh agar label tidak
+ * bergantung pada wilayah mana yang kebetulan di-refresh terakhir.
+ */
+export function chooseLeadCity(lead, cityNames = []) {
+  let best = null;
+  for (const name of cityNames) {
+    if (!name) continue;
+    const city = CORPORATE_CITIES.find((item) => item.name === name);
+    if (!city) continue;
+    const rank = regionCandidateRank(lead, city);
+    if (!best || regionRankBetter(rank, best.rank)) best = { name, rank };
+  }
+  return best?.name || "";
 }
 
 /**
@@ -2533,6 +2590,23 @@ export async function refreshCorporateCity(db, cityName, seed) {
   }
 
   const leads = [...merged.values()];
+  // Label wilayah tidak boleh ditentukan urutan refresh. Satu elemen bisa
+  // tertangkap bbox beberapa wilayah, jadi bandingkan label tersimpan dengan
+  // kandidat dan pilih yang benar-benar memuat titik/alamat entitas.
+  const existingCity = new Map();
+  for (let index = 0; index < leads.length; index += 40) {
+    const chunk = leads.slice(index, index + 40).map((lead) => lead.id);
+    const placeholders = chunk.map(() => "?").join(",");
+    const rows = await db
+      .prepare(`SELECT id, city FROM corporate_leads WHERE id IN (${placeholders})`)
+      .bind(...chunk)
+      .all();
+    for (const row of rows.results ?? []) existingCity.set(row.id, row.city);
+  }
+  for (const lead of leads) {
+    const chosen = chooseLeadCity(lead, [existingCity.get(lead.id), lead.city]);
+    if (chosen) lead.city = chosen;
+  }
   const now = new Date().toISOString();
   const statements = [
     db.prepare("DELETE FROM corporate_leads WHERE city = ?").bind(city.name),

@@ -57,12 +57,26 @@ function regionAliasKey(value?: string): string {
   return REGION_ALIASES[key] || key;
 }
 
+/** "Kabupaten Bogor" harus menjadi Kab. Bogor, bukan Kota Bogor. */
+function regionByPrefix(value?: string): string | undefined {
+  const text = String(value || "").trim();
+  const prefix = /^(kota|kabupaten|kab\.?)\s+/i.exec(text);
+  if (!prefix) return undefined;
+  const kind = /^kota/i.test(prefix[1]) ? "Kota" : "Kab.";
+  const key = regionNameKey(text);
+  return CORPORATE_CITIES.find(
+    (name) => name.startsWith(kind) && regionNameKey(name) === key,
+  );
+}
+
 function regionsForLocation(city?: string, area?: string): string[] {
   const target = String(city || "").trim().toLowerCase();
   const areaText = String(area || "").trim().toLowerCase();
   const targetKey = regionAliasKey(city);
   const areaKey = regionAliasKey(area);
   const regions = [
+    regionByPrefix(city),
+    regionByPrefix(area),
     CORPORATE_CITIES.find((name) => name.toLowerCase() === target),
     CORPORATE_CITIES.find((name) => regionAliasKey(name) === targetKey),
     CORPORATE_CITIES.find((name) => regionAliasKey(name) === areaKey),

@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   CORPORATE_CITIES,
+  chooseLeadCity,
   coordinateCandidateMatchesName,
+  coordinateInRegion,
   coordinateReadyForPublish,
   isPicRole,
   isRoadCoordinate,
@@ -39,19 +41,97 @@ test("node OSM memakai lat/lon elemen, bukan hanya center", () => {
   assert.equal(nodeLead.coordinateSource, "OpenStreetMap node");
 });
 
-test("lead duplikat mengikuti area yang disebut sebelum bbox terkecil", () => {
-  const byName = (name) => CORPORATE_CITIES.find((city) => city.name === name);
-  const tangerang = byName("Tangerang");
-  const depok = byName("Depok");
+test("lead duplikat mengikuti bukti wilayah sebelum bbox terkecil", () => {
   // Area menyebut Tangerang Selatan: label Tangerang menang walau bbox Depok kecil.
-  const tangsel = regionCandidateRank({ area: "South Tangerang" }, tangerang);
-  const tangselInDepok = regionCandidateRank({ area: "South Tangerang" }, depok);
-  assert.ok(tangsel[0] < tangselInDepok[0]);
-  assert.ok(!(tangerang === undefined || depok === undefined));
-  // Tanpa area, bbox paling kecil (paling spesifik) yang dipakai.
-  const plainDepok = regionCandidateRank({ area: "" }, depok);
-  const plainTangerang = regionCandidateRank({ area: "" }, tangerang);
-  assert.ok(plainDepok[1] < plainTangerang[1]);
+  assert.equal(
+    chooseLeadCity({ area: "South Tangerang", latitude: -6.36, longitude: 106.71 }, [
+      "Depok",
+      "Tangerang",
+    ]),
+    "Tangerang",
+  );
+  // Tanpa area, wilayah dengan bbox paling kecil yang memuat titik dipakai.
+  assert.equal(
+    chooseLeadCity({ area: "", latitude: -6.39, longitude: 106.73 }, [
+      "Depok",
+      "Gunung Sindur",
+    ]),
+    "Gunung Sindur",
+  );
+});
+
+test("label wilayah dipilih dari bukti, bukan urutan refresh", () => {
+  const allCities = CORPORATE_CITIES.map((city) => city.name);
+  const choose = (lead, candidates) => chooseLeadCity(lead, candidates);
+  // Titik di Kab. Sukabumi tidak boleh berpindah ke Kab. Cianjur/Depok hanya
+  // karena wilayah lain di-refresh belakangan.
+  assert.equal(
+    choose(
+      { latitude: -6.99, longitude: 106.55, area: "Kabupaten Sukabumi" },
+      ["Kota Sukabumi", "Kab. Sukabumi", "Kab. Cianjur", "Depok"],
+    ),
+    "Kab. Sukabumi",
+  );
+  // Alamat Tangerang Selatan menang atas bbox Depok yang lebih kecil.
+  assert.equal(
+    choose(
+      { latitude: -6.36, longitude: 106.71, area: "South Tangerang" },
+      ["Depok", "Tangerang"],
+    ),
+    "Tangerang",
+  );
+  // Alamat Kabupaten Bogor menang atas kantong Gunung Sindur.
+  assert.equal(
+    choose(
+      { latitude: -6.421, longitude: 106.733, area: "Kabupaten Bogor" },
+      ["Gunung Sindur", "Kab. Bogor"],
+    ),
+    "Kab. Bogor",
+  );
+  // Tanpa alamat, bbox paling spesifik yang memuat titik dipakai.
+  assert.equal(
+    choose({ latitude: -6.39, longitude: 106.73, area: "" }, [
+      "Kab. Bogor",
+      "Gunung Sindur",
+    ]),
+    "Gunung Sindur",
+  );
+  // Titik di luar semua bbox kandidat tetap memakai kandidat terdekat, bukan
+  // diam-diam diberi wilayah yang tidak memuatnya.
+  assert.equal(
+    choose({ latitude: -6.2, longitude: 106.8, area: "" }, allCities).length > 0,
+    true,
+  );
+});
+
+test("label wilayah selalu wilayah yang memuat koordinat lead", () => {
+  const samples = [
+    { area: "Bogor Tengah", latitude: -6.595, longitude: 106.816 },
+    { area: "Parung", latitude: -6.421, longitude: 106.733 },
+    { area: "Cipanas", latitude: -6.705, longitude: 107.04 },
+    { area: "Cianjur", latitude: -6.82, longitude: 107.14 },
+    { area: "Rangkasbitung", latitude: -6.36, longitude: 106.25 },
+    { area: "Sukabumi", latitude: -6.92, longitude: 106.93 },
+    { area: "Kabupaten Sukabumi", latitude: -6.99, longitude: 106.55 },
+    { area: "Beji", latitude: -6.39, longitude: 106.82 },
+    { area: "South Tangerang", latitude: -6.36, longitude: 106.71 },
+    { area: "Teluknaga", latitude: -6.03, longitude: 106.45 },
+    { area: "Jakarta Utara", latitude: -6.12, longitude: 106.88 },
+    { area: "Pulau Pramuka", latitude: -5.745, longitude: 106.61 },
+    { area: "Anyer", latitude: -6.05, longitude: 105.9 },
+    { area: "Cilegon", latitude: -6.02, longitude: 106.05 },
+    { area: "Pamanukan", latitude: -6.21, longitude: 107.81 },
+  ];
+  const allCities = CORPORATE_CITIES.map((city) => city.name);
+  for (const sample of samples) {
+    const city = chooseLeadCity(sample, allCities);
+    assert.ok(city, `tidak ada wilayah untuk ${sample.area}`);
+    assert.equal(
+      coordinateInRegion(city, sample.area, sample.latitude, sample.longitude),
+      true,
+      `${sample.area} diberi label ${city} yang tidak memuat titiknya`,
+    );
+  }
 });
 
 test("Kota Sukabumi memakai pusat kotanya, bukan pusat kabupaten", () => {
