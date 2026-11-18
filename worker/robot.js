@@ -534,7 +534,7 @@ const NEED_DEFINITIONS = [
     label: "Operasional hotel membutuhkan jaringan",
     weight: 12,
     strong: true,
-    re: /\b(?:meeting room|ballroom|property management system|pms|smart hotel|guest wifi|wifi kamar|renovasi kamar|new wing)\b/i,
+    re: /\b(?:meeting room|ballroom|property management system|pms|smart hotel|renovasi kamar|new wing|upgrade wifi)\b/i,
   },
   {
     id: "it-role",
