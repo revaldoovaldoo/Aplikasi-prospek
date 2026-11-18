@@ -687,10 +687,10 @@ export function rowToLead(row) {
 
 /** Hasil OpenSanctions berisiko tinggi harus dikonfirmasi manusia. */
 export function screeningReviewRequired(lead = {}) {
-  return (
-    clean(lead.screeningStatus).toLowerCase() === "review" &&
-    !clean(lead.screeningReviewedAt)
-  );
+  const status = clean(lead.screeningStatus).toLowerCase();
+  // Hanya hasil clear yang boleh lolos. Review, error, disabled, dan status
+  // kosong (belum diperiksa) semuanya membutuhkan konfirmasi manusia.
+  return status !== "clear" && !clean(lead.screeningReviewedAt);
 }
 
 /**

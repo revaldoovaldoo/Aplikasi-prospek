@@ -25,6 +25,7 @@ test("Kurir Telegram menolak nama resepsionis, placeholder, dan beberapa nama", 
     latitude: -6.2,
     longitude: 106.8,
     coordinateSource: "OpenStreetMap node",
+    screeningStatus: "clear",
   };
   assert.equal(
     buildTelegramMessage({
@@ -117,6 +118,7 @@ const lead = {
   latitude: -6.6,
   longitude: 106.8,
   coordinateSource: "OpenStreetMap node",
+  screeningStatus: "clear",
 };
 
 test("Penulis Prospek menyimpan lead yang sudah lolos syarat Telegram", async () => {
@@ -472,6 +474,7 @@ test("Prospek robot tidak dibuang hanya karena e-mail/website kosong", () => {
     website: "",
     sourceLeadId: "lead-1",
     source: "Corporate Engine · Robot AI",
+    screeningStatus: "clear",
   };
   const data = {
     companies: [
@@ -584,6 +587,51 @@ test("Prospek robot tidak menyimpan titik pusat wilayah", () => {
   assert.equal(cleaned.companies[0].latitude, 0);
   assert.equal(cleaned.companies[0].longitude, 0);
   assert.equal(cleaned.companies[0].coordinateSource, "");
+});
+
+test("screening error, disabled, dan kosong tanpa konfirmasi menahan publish", () => {
+  const lead = {
+    name: "Hotel Contoh",
+    contactName: "Budi",
+    phone: "081234567890",
+    latitude: -6.2,
+    longitude: 106.8,
+    coordinateSource: "OpenStreetMap node",
+  };
+  for (const screeningStatus of ["error", "disabled", ""]) {
+    assert.equal(
+      isLeadPublishable({ ...lead, screeningStatus } as never),
+      false,
+      `status ${screeningStatus || "kosong"} harus tertahan`,
+    );
+    assert.equal(
+      isCorporateLeadAddable({ ...lead, screeningStatus } as never, true),
+      false,
+      `manual ${screeningStatus || "kosong"} harus tertahan`,
+    );
+  }
+  assert.equal(
+    isLeadPublishable({
+      ...lead,
+      screeningStatus: "error",
+      screeningReviewedAt: "2026-11-17T04:00:00.000Z",
+    } as never),
+    true,
+  );
+});
+
+test("publish Prospek menolak screening error/disabled/kosong tanpa konfirmasi", async () => {
+  for (const screeningStatus of ["error", "disabled", ""]) {
+    const result = await publishLeadToProspect(null as never, "owner-1", {
+      ...lead,
+      screeningStatus,
+    } as never);
+    assert.equal(
+      result.added,
+      false,
+      `publish ${screeningStatus || "kosong"} harus ditolak`,
+    );
+  }
 });
 
 test("lead dengan review OpenSanctions belum dikonfirmasi ditahan dari Prospek", () => {

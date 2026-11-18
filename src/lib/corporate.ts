@@ -430,15 +430,15 @@ export function isCorporateLeadAddable(
   return manual || isLeadComplete(lead);
 }
 
-/** Hasil OpenSanctions berisiko tinggi harus dikonfirmasi manusia. */
+/** Screening yang belum clear harus dikonfirmasi manusia sebelum publish. */
 export function screeningReviewRequired(lead: {
   screeningStatus?: string;
   screeningReviewedAt?: string;
 }): boolean {
-  return (
-    String(lead.screeningStatus || "").trim().toLowerCase() === "review" &&
-    !String(lead.screeningReviewedAt || "").trim()
-  );
+  const status = String(lead.screeningStatus || "").trim().toLowerCase();
+  // Hanya hasil clear yang boleh lolos. Review, error, disabled, dan status
+  // kosong (belum diperiksa) semuanya membutuhkan konfirmasi manusia.
+  return status !== "clear" && !String(lead.screeningReviewedAt || "").trim();
 }
 
 /** Lead yang sudah memenuhi syarat Telegram boleh disinkronkan ke Prospek. */
