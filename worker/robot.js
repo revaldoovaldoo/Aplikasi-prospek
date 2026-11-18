@@ -2995,9 +2995,10 @@ export async function sendTestTelegram(db, env, ownerId) {
 }
 
 /**
- * Intake kandidat nyata ke antrean Corporate Engine. Hanya identitas entitas
- * dan website resmi yang dimasukkan; nama PIC, nomor, dan koordinat tetap
- * harus ditemukan serta diverifikasi oleh agen Finding/Klarifikasi.
+ * Intake kandidat nyata ke antrean Corporate Engine. Identitas dan website
+ * wajib; PIC/koordinat boleh dikirim sebagai petunjuk yang sudah dibaca dari
+ * sumber publik. Riset tetap memverifikasi ulang nama, nomor, dan titik
+ * sebelum lead boleh dipublikasikan.
  */
 export async function addRobotCandidates(db, candidates = []) {
   await ensureCorporateSchema(db);
@@ -3025,20 +3026,59 @@ export async function addRobotCandidates(db, candidates = []) {
       .replace(/^-+|-+$/g, "")
       .slice(0, 80);
     const id = `manual:${slug}`;
+    const phone = clean(candidate?.phone);
+    const contactName = sanitizePicName(candidate?.contactName);
+    const contactRole = clean(candidate?.contactRole);
+    const contactUrl = clean(candidate?.contactUrl);
+    const coordinateSource = clean(candidate?.coordinateSource);
+    const latitude = Number(candidate?.latitude);
+    const longitude = Number(candidate?.longitude);
+    const hasCoordinate =
+      coordinateSource !== "" &&
+      Number.isFinite(latitude) &&
+      Number.isFinite(longitude) &&
+      Math.abs(latitude) <= 90 &&
+      Math.abs(longitude) <= 180;
     await db
       .prepare(
         `INSERT INTO corporate_leads
-          (id, name, city, area, category, email, phone, website, updated_at)
-         VALUES (?, ?, ?, ?, ?, '', '', ?, ?)
+          (id, name, city, area, category, email, phone, website,
+           contact_name, contact_role, contact_url, latitude, longitude,
+           coordinate_address, coordinate_source, updated_at)
+         VALUES (?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            name = excluded.name,
            city = excluded.city,
            area = CASE WHEN corporate_leads.area = '' THEN excluded.area ELSE corporate_leads.area END,
            category = excluded.category,
            website = excluded.website,
+           phone = CASE WHEN excluded.phone = '' THEN corporate_leads.phone ELSE excluded.phone END,
+           contact_name = CASE WHEN excluded.contact_name = '' THEN corporate_leads.contact_name ELSE excluded.contact_name END,
+           contact_role = CASE WHEN excluded.contact_role = '' THEN corporate_leads.contact_role ELSE excluded.contact_role END,
+           contact_url = CASE WHEN excluded.contact_url = '' THEN corporate_leads.contact_url ELSE excluded.contact_url END,
+           latitude = CASE WHEN excluded.coordinate_source = '' THEN corporate_leads.latitude ELSE excluded.latitude END,
+           longitude = CASE WHEN excluded.coordinate_source = '' THEN corporate_leads.longitude ELSE excluded.longitude END,
+           coordinate_address = CASE WHEN excluded.coordinate_source = '' THEN corporate_leads.coordinate_address ELSE excluded.coordinate_address END,
+           coordinate_source = CASE WHEN excluded.coordinate_source = '' THEN corporate_leads.coordinate_source ELSE excluded.coordinate_source END,
            updated_at = excluded.updated_at`,
       )
-      .bind(id, name, city, clean(candidate?.area), category, website, now)
+      .bind(
+        id,
+        name,
+        city,
+        clean(candidate?.area),
+        category,
+        phone,
+        website,
+        contactName,
+        contactRole,
+        contactUrl,
+        hasCoordinate ? latitude : 0,
+        hasCoordinate ? longitude : 0,
+        clean(candidate?.coordinateAddress),
+        hasCoordinate ? coordinateSource : "",
+        now,
+      )
       .run();
     ids.push(id);
   }
