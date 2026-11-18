@@ -3092,6 +3092,20 @@ export async function runCorporateRobot(db, env = {}, options = {}) {
     // Bila lead dipilih eksplisit, hanya lead itu yang diproses, tanpa
     // mencampurnya dengan antrean jatuh tempo lain. Ini membuat retrigger
     // manual deterministik untuk audit dan demo tiga vertical.
+    if (selectedLeadIds.length > 0 && options.restartSelected) {
+      const now = nowIso();
+      await db
+        .prepare(
+          `UPDATE corporate_robot_jobs
+           SET stage = 'finding', status = 'queued', need_score = 0,
+               need_label = '', need_evidence = '[]', contact_status = 'pending',
+               contact_confidence = 0, contact_evidence = '[]', attempts = 0,
+               last_error = '', next_run_at = ?, updated_at = ?
+           WHERE lead_id IN (${selectedLeadIds.map(() => "?").join(", ")})`,
+        )
+        .bind(now, now, ...selectedLeadIds)
+        .run();
+    }
     const selectedClause =
       selectedLeadIds.length > 0
         ? `j.lead_id IN (${selectedLeadIds.map(() => "?").join(", ")})`

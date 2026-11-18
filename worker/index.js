@@ -701,6 +701,7 @@ async function handleCorporateRobotRun(request, env, auth) {
       ownerId: user.sub,
       limit,
       leadIds,
+      restartSelected: body?.restart === true,
       force: true,
       source: "manual",
     });
