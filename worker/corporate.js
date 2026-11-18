@@ -776,14 +776,25 @@ export function hasBoundPicPhoneEvidence(lead = {}) {
   );
 }
 
+/** True bila error berasal dari kuota/billing OpenSanctions (HTTP 402). */
+export function screeningQuotaFailure(lead = {}) {
+  if (clean(lead.screeningStatus).toLowerCase() !== "error") return false;
+  const evidence = (Array.isArray(lead.screeningEvidence) ? lead.screeningEvidence : [])
+    .join(" ")
+    .toLowerCase();
+  return /402|kuota|billing/.test(evidence);
+}
+
 /**
- * Semua status selain clear harus ditinjau manusia sebelum publish. Ini
- * mencakup review berisiko, error kuota (HTTP 402), layanan nonaktif, dan lead
- * yang belum pernah diperiksa. Konfirmasi manusia dicatat terpisah agar hasil
- * screening tidak dipalsukan menjadi clear.
+ * Semua status selain clear harus ditinjau manusia sebelum publish, kecuali
+ * error kuota/billing (HTTP 402). Kuota habis bukan temuan risiko dan tidak
+ * boleh menghentikan seluruh antrean; lead tetap ditandai error untuk review
+ * manusia dan statusnya tidak dipalsukan menjadi clear. Konfirmasi manusia
+ * dicatat terpisah di screeningReviewedAt.
  */
 export function screeningReviewRequired(lead = {}) {
   const status = clean(lead.screeningStatus).toLowerCase();
+  if (screeningQuotaFailure(lead)) return false;
   return status !== "clear" && !clean(lead.screeningReviewedAt);
 }
 
@@ -798,7 +809,7 @@ export function screeningHoldReason(lead = {}) {
   }
   if (status === "error") {
     return /402|kuota|billing/.test(evidence)
-      ? "Pemeriksaan OpenSanctions gagal karena kuota/billing API (HTTP 402). Lead ditahan; periksa kuota atau billing, lalu tinjau manual di Robot AI."
+      ? "Pemeriksaan OpenSanctions gagal karena kuota/billing API (HTTP 402). Lead tetap diproses tetapi ditandai untuk ditinjau manusia; periksa kuota atau billing."
       : "Pemeriksaan OpenSanctions gagal. Lead ditahan sampai pemeriksaan berhasil atau ditinjau manual di Robot AI.";
   }
   if (status === "disabled") {

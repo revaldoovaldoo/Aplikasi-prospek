@@ -22,6 +22,7 @@ import {
   pruneIncompleteRobotCompanies,
   scrubRobotCompanyCoordinates,
   screeningBadgeView,
+  screeningReviewRequired,
   syncRobotCompanies,
 } from "../src/lib/corporate.ts";
 
@@ -793,6 +794,24 @@ test("alasan penahanan membedakan risiko, kuota 402, nonaktif, dan belum diperik
     screeningHoldReason({ screeningStatus: "" }),
     /belum dijalankan/,
   );
+});
+
+test("error kuota 402 non-blocking tetapi tetap ditandai error", () => {
+  const lead = {
+    name: "Hotel Contoh",
+    contactName: "Budi",
+    phone: "081234567890",
+    latitude: -6.2,
+    longitude: 106.8,
+    coordinateSource: "OpenStreetMap node",
+    screeningStatus: "error",
+    screeningEvidence: ["OpenSanctions: kuota/billing API habis (HTTP 402)."],
+  };
+  assert.equal(screeningReviewRequired(lead as never), false);
+  assert.equal(isLeadPublishable(lead as never), true);
+  assert.equal(isCorporateLeadAddable(lead as never, true), true);
+  assert.equal(screeningBadgeView(lead as never).label, "OpenSanctions kuota 402");
+  assert.equal(screeningBadgeView(lead as never).tone, "error");
 });
 
 test("badge screening membedakan review, error kuota, nonaktif, dan belum diperiksa", () => {

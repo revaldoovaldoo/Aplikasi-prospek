@@ -432,14 +432,17 @@ export function isCorporateLeadAddable(
 
 /**
  * Screening yang belum clear harus dikonfirmasi manusia sebelum publish.
- * Error kuota (HTTP 402), layanan nonaktif, dan status kosong tidak boleh
- * dianggap aman; masing-masing butuh tinjauan manual yang tercatat.
+ * Error kuota HTTP 402 adalah pengecualian: kuota habis bukan temuan risiko,
+ * jadi lead tetap diproses tetapi status error dan buktinya dipertahankan
+ * untuk review manusia. Layanan nonaktif dan status kosong tetap ditahan.
  */
 export function screeningReviewRequired(lead: {
   screeningStatus?: string;
   screeningReviewedAt?: string;
+  screeningEvidence?: string[];
 }): boolean {
   const status = String(lead.screeningStatus || "").trim().toLowerCase();
+  if (screeningQuotaIssue(lead)) return false;
   return status !== "clear" && !String(lead.screeningReviewedAt || "").trim();
 }
 
@@ -524,7 +527,7 @@ export function screeningHoldMessage(lead: {
   }
   if (state === "error") {
     return screeningQuotaIssue(lead)
-      ? "Pemeriksaan OpenSanctions gagal karena kuota/billing API (HTTP 402). Lead ditahan; periksa kuota atau billing, lalu tinjau ulang."
+      ? "Pemeriksaan OpenSanctions gagal karena kuota/billing API (HTTP 402). Lead tetap diproses tetapi ditandai untuk ditinjau manusia; periksa kuota atau billing."
       : "Pemeriksaan OpenSanctions gagal. Lead ditahan sampai pemeriksaan berhasil atau ditinjau manual.";
   }
   if (state === "disabled") {

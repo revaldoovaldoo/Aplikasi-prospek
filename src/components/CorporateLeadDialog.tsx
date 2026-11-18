@@ -59,11 +59,13 @@ export default function CorporateLeadDialog({
           : "OpenSanctions · Belum diperiksa";
   const screeningActionLabel = screeningBusy
     ? "Menyimpan…"
-    : screeningPending
-      ? screeningStateValue === "review"
-        ? "Konfirmasi & lanjutkan"
-        : "Konfirmasi tinjauan manual"
-      : "Buka kembali penahanan";
+    : screeningReviewed
+      ? "Buka kembali tinjauan"
+      : screeningPending
+        ? screeningStateValue === "review"
+          ? "Konfirmasi & lanjutkan"
+          : "Konfirmasi tinjauan manual"
+        : "Tandai sudah ditinjau";
 
   return (
     <Modal
@@ -91,9 +93,11 @@ export default function CorporateLeadDialog({
               title={
                 screeningPending
                   ? screeningHoldMessage(lead)
-                  : approximateCoordinate
-                    ? "Koordinat masih perkiraan wilayah. Lead belum bisa masuk Prospek sampai koordinat entitas tervalidasi."
-                    : "Masukkan perusahaan ini ke Prospek meskipun informasinya belum lengkap"
+                  : screeningQuota
+                    ? "Status OpenSanctions ditandai error kuota 402; lead tetap boleh masuk Prospek dan perlu ditinjau manusia."
+                    : approximateCoordinate
+                      ? "Koordinat masih perkiraan wilayah. Lead belum bisa masuk Prospek sampai koordinat entitas tervalidasi."
+                      : "Masukkan perusahaan ini ke Prospek meskipun informasinya belum lengkap"
               }
             >
               <CheckIcon size={15} /> {visitLabel}
@@ -230,23 +234,29 @@ export default function CorporateLeadDialog({
           {lead && screeningStateValue !== "clear" ? (
             <div
               className={`lead-screening-review ${screeningStateValue} ${
-                screeningPending ? "pending" : "resolved"
+                screeningReviewed ? "resolved" : "pending"
               }`}
             >
               <div className="lead-screening-head">
                 <strong>{screeningTitle}</strong>
-                <span>{screeningReviewed ? "Ditinjau manual" : "Ditahan"}</span>
+                <span>
+                  {screeningReviewed
+                    ? "Ditinjau manual"
+                    : screeningPending
+                      ? "Ditahan"
+                      : "Ditandai"}
+                </span>
               </div>
               <p>
-                {screeningPending
-                  ? screeningHoldMessage(lead)
-                  : `Tinjauan manual sudah dicatat${
+                {screeningReviewed
+                  ? `Tinjauan manual sudah dicatat${
                       lead.screeningReviewedAt
                         ? ` pada ${new Date(lead.screeningReviewedAt).toLocaleString("id-ID")}`
                         : ""
-                    }. Hasil screening tetap disimpan sebagai "${screeningStateValue}".`}
+                    }. Hasil screening tetap disimpan sebagai "${screeningStateValue}".`
+                  : screeningHoldMessage(lead)}
               </p>
-              {screeningPending && screeningQuota ? (
+              {screeningQuota && !screeningReviewed ? (
                 <p>
                   Periksa kuota atau billing API key OpenSanctions. Robot tidak
                   mengulang request selama masa cooldown agar tidak membuang kuota.
@@ -264,11 +274,11 @@ export default function CorporateLeadDialog({
                   type="button"
                   className="btn btn-secondary btn-small"
                   disabled={screeningBusy}
-                  onClick={() => onScreeningReview(screeningPending)}
+                  onClick={() => onScreeningReview(!screeningReviewed)}
                 >
                   {screeningActionLabel}
                 </button>
-              ) : screeningPending ? (
+              ) : !screeningReviewed ? (
                 <p className="lead-screening-hint">
                   Konfirmasi tinjauan tersedia di Robot AI.
                 </p>
