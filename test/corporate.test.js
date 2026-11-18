@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  CORPORATE_CITIES,
   coordinateCandidateMatchesName,
   coordinateReadyForPublish,
   isPicRole,
@@ -9,11 +10,34 @@ import {
   normalizeOsmCoordinateSource,
   osmElementCenter,
   refreshCacheReusable,
+  regionCandidateRank,
+  regionCoordinate,
   resolveLeadCoordinates,
   sanitizePicName,
   screeningFieldsForRefresh,
   screeningFieldsForResearch,
 } from "../worker/corporate.js";
+
+test("lead duplikat mengikuti area yang disebut sebelum bbox terkecil", () => {
+  const byName = (name) => CORPORATE_CITIES.find((city) => city.name === name);
+  const tangerang = byName("Tangerang");
+  const depok = byName("Depok");
+  // Area menyebut Tangerang Selatan: label Tangerang menang walau bbox Depok kecil.
+  const tangsel = regionCandidateRank({ area: "South Tangerang" }, tangerang);
+  const tangselInDepok = regionCandidateRank({ area: "South Tangerang" }, depok);
+  assert.ok(tangsel[0] < tangselInDepok[0]);
+  assert.ok(!(tangerang === undefined || depok === undefined));
+  // Tanpa area, bbox paling kecil (paling spesifik) yang dipakai.
+  const plainDepok = regionCandidateRank({ area: "" }, depok);
+  const plainTangerang = regionCandidateRank({ area: "" }, tangerang);
+  assert.ok(plainDepok[1] < plainTangerang[1]);
+});
+
+test("Kota Sukabumi memakai pusat kotanya, bukan pusat kabupaten", () => {
+  const coordinate = regionCoordinate("Kota Sukabumi", "");
+  assert.match(coordinate.coordinateAddress, /Kota Sukabumi/);
+  assert.notEqual(coordinate.latitude, regionCoordinate("Kab. Sukabumi", "").latitude);
+});
 
 test("cache refresh tidak dipakai ulang bila bbox wilayah berubah", () => {
   const bbox = [-6.42, 106.34, -5.92, 106.8];

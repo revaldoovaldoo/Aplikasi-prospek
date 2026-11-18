@@ -82,7 +82,9 @@ function regionByName(value) {
   const targetKey = regionAliasKey(value);
   if (!target) return null;
   // Data lama menyimpan "Sukabumi" tanpa membedakan kota dan kabupaten.
-  if (targetKey === "sukabumi") {
+  // Hanya nama generik "Sukabumi" yang diarahkan ke kabupaten; "Kota
+  // Sukabumi" dan "Kab. Sukabumi" tetap memakai wilayahnya masing-masing.
+  if (targetKey === "sukabumi" && !/^(?:kota|kabupaten|kab\.?)\s+/i.test(clean(value))) {
     return CORPORATE_CITIES.find((city) => city.name === "Kab. Sukabumi");
   }
   return (
@@ -1068,22 +1070,23 @@ export async function readCorporateLeads(db, seed) {
   // Gunung Sindur tetap berlabel Gunung Sindur (bukan Kab. Bogor) dan lead di
   // Cipanas tetap berlabel Cipanas (bukan Kab. Cianjur).
   const leadById = new Map();
-  const cityArea = new Map(
-    CORPORATE_CITIES.map((city) => [
-      city.name,
-      Math.abs((city.bbox[2] - city.bbox[0]) * (city.bbox[3] - city.bbox[1])),
-    ]),
-  );
+  const cityByNameForRank = new Map(CORPORATE_CITIES.map((city) => [city.name, city]));
+  const better = (left, right) => {
+    if (left[0] !== right[0]) return left[0] < right[0];
+    return left[1] < right[1];
+  };
   const pushUniqueLead = (lead) => {
-    const area = cityArea.get(lead.city) ?? Number.POSITIVE_INFINITY;
+    const city = cityByNameForRank.get(lead.city);
+    if (!city) return;
+    const rank = regionCandidateRank(lead, city);
     const existing = leadById.get(lead.id);
     if (!existing) {
-      leadById.set(lead.id, { lead, area });
+      leadById.set(lead.id, { lead, rank });
       return;
     }
-    if (area < existing.area) {
+    if (better(rank, existing.rank)) {
       existing.lead = lead;
-      existing.area = area;
+      existing.rank = rank;
     }
   };
   const cities = CORPORATE_CITIES.map((city) => {
@@ -2416,6 +2419,20 @@ export async function enrichCorporateLead(db, id, env = {}) {
     found: Boolean(email || phone || person),
     webSearch: { enabled: web.enabled, error: web.error || "" },
   };
+}
+
+/**
+ * Peringkat kandidat wilayah untuk satu lead duplikat. Area yang disebut pada
+ * alamat (mis. "South Tangerang") menang atas tebakan bbox, lalu bbox terkecil
+ * agar wilayah fokus (Gunung Sindur, Cipanas) tidak tertelan wilayah besar.
+ */
+export function regionCandidateRank(lead, city) {
+  const areaRegion = regionByName(lead?.area);
+  const areaMatch = areaRegion && areaRegion.name === city.name ? 0 : 1;
+  const size = Math.abs(
+    (city.bbox[2] - city.bbox[0]) * (city.bbox[3] - city.bbox[1]),
+  );
+  return [areaMatch, size];
 }
 
 /**
