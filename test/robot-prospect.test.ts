@@ -153,6 +153,7 @@ test("Kurir Telegram menolak nama resepsionis, placeholder, dan beberapa nama", 
     longitude: 106.8,
     coordinateSource: "OpenStreetMap node",
     screeningStatus: "clear",
+    validationStatus: "verified",
     validationEvidence: [
       "Nomor PIC 08123456789 tercantum bersama PIC Budi Santoso pada https://contoh.co.id/kontak.",
     ],
@@ -244,7 +245,7 @@ const lead = {
   phone: "+62 812-3456-7890",
   website: "",
   contactName: "Budi",
-  validationStatus: "partial",
+  validationStatus: "verified",
   latitude: -6.6,
   longitude: 106.8,
   coordinateSource: "OpenStreetMap node",
@@ -269,7 +270,7 @@ test("Penulis Prospek menyimpan lead yang sudah lolos syarat Telegram", async ()
   assert.equal(data.companies[0].name, "Hotel Contoh");
   assert.equal(data.companies[0].contactName, "Budi");
   assert.equal(data.companies[0].sourceLeadId, "lead-1");
-  assert.equal(data.companies[0].validationStatus, "partial");
+  assert.equal(data.companies[0].validationStatus, "verified");
   assert.equal(data.companies[0].email, "");
   assert.equal(data.companies[0].website, "");
 });
@@ -428,6 +429,22 @@ test("Penulis Prospek mempertahankan field lama saat data baru kosong", async ()
   assert.equal(data.companies[0].website, "https://hotel.example.com");
 });
 
+test("Penulis Prospek menolak lead yang belum dinyatakan valid oleh Klarifikasi", async () => {
+  const db = fakeStateDb({
+    companies: [],
+    quotes: [],
+    locations: ["Jakarta"],
+    profile: {},
+  });
+  const result = await publishLeadToProspect(db, "owner-1", {
+    ...lead,
+    validationStatus: "partial",
+  });
+  assert.equal(result.added, false);
+  assert.match(result.reason, /valid|e-mail|identitas/i);
+  assert.equal(db.state.updated, false);
+});
+
 test("Penulis Prospek menolak lead tanpa nama atau nomor PIC", async () => {
   const db = fakeStateDb({
     companies: [],
@@ -582,6 +599,28 @@ test("Rekonsiliasi hanya memasukkan lead terkirim yang memenuhi syarat", async (
   assert.equal(result.notEligible, 1);
 });
 
+test("Kurir Telegram menolak lead yang belum dinyatakan valid oleh Klarifikasi", () => {
+  const message = buildTelegramMessage({
+    name: "PT Contoh",
+    city: "Kota Bogor",
+    category: "company",
+    contactName: "Budi Santoso",
+    contactRole: "IT Manager",
+    phone: "08123456789",
+    email: "info@contoh.co.id",
+    latitude: -6.59,
+    longitude: 106.8,
+    coordinateSource: "OpenStreetMap node",
+    screeningStatus: "clear",
+    validationStatus: "partial",
+    validationEvidence: [
+      "Nomor PIC 08123456789 tercantum bersama PIC Budi Santoso pada https://contoh.co.id/kontak.",
+      "E-mail yang ditemukan masih generik (info/sales/admin), bukan e-mail PIC.",
+    ],
+  });
+  assert.equal(message, "");
+});
+
 test("Kurir Telegram menolak koordinat yang belum dikonfirmasi", () => {
   const message = buildTelegramMessage({
     name: "Lazuardi Global Islamic School",
@@ -593,6 +632,7 @@ test("Kurir Telegram menolak koordinat yang belum dikonfirmasi", () => {
     latitude: -6.3562728,
     longitude: 106.7804875,
     coordinateSource: "Nominatim/OpenStreetMap",
+    validationStatus: "verified",
   });
   assert.equal(message, "");
 });

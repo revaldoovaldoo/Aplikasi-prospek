@@ -1347,10 +1347,22 @@ function contactReadyForPublish(lead) {
   );
 }
 
+function clarificationValid(lead) {
+  // Tim Klarifikasi harus menyatakan seluruh identitas valid: nama PIC,
+  // nomor PIC, e-mail PIC, website, dan koordinat entitas. `contactStatus`
+  // saja tidak cukup karena tidak memeriksa e-mail, sehingga lead dengan
+  // e-mail generik tidak boleh lolos ke Telegram atau Prospek.
+  return (
+    contactReadyForPublish(lead) &&
+    clean(lead.validationStatus) === "verified"
+  );
+}
+
 function telegramLeadReady(lead) {
   // Publish tidak boleh jalan selama hasil OpenSanctions berisiko tinggi
-  // belum dikonfirmasi manusia di Robot AI.
-  return contactReadyForPublish(lead) && !screeningReviewRequired(lead);
+  // belum dikonfirmasi manusia di Robot AI, atau selama Klarifikasi belum
+  // menyatakan identitas PIC/e-mail valid.
+  return clarificationValid(lead) && !screeningReviewRequired(lead);
 }
 
 function prospectLeadReady(lead) {
@@ -1811,7 +1823,8 @@ export async function publishLeadToProspect(db, ownerId, lead) {
   if (!prospectLeadReady(lead)) {
     return {
       added: false,
-      reason: "Nama PIC, nomor PIC, atau koordinat entitas belum lengkap.",
+      reason:
+        "Klarifikasi belum menyatakan nama PIC, nomor PIC, e-mail PIC, dan koordinat entitas valid.",
     };
   }
   const latitude = Number(lead.latitude);
@@ -2205,7 +2218,7 @@ async function advanceJob(db, row, env, settings, ownerId) {
     }
 
     if (stage === "publish_telegram") {
-      if (contactStatus !== "verified") {
+      if (contactStatus !== "verified" || !clarificationValid(lead)) {
         attempts += 1;
         const exhausted = attempts >= 3;
         const nextStage = exhausted ? "paused" : "clarification";
@@ -2293,7 +2306,7 @@ async function advanceJob(db, row, env, settings, ownerId) {
     }
 
     if (stage === "publish_prospect") {
-      if (contactStatus !== "verified") {
+      if (contactStatus !== "verified" || !clarificationValid(lead)) {
         attempts += 1;
         const exhausted = attempts >= 3;
         const nextStage = exhausted ? "paused" : "clarification";

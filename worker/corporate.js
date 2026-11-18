@@ -15,7 +15,8 @@ export const CORPORATE_CITIES = [
   { name: "Tangerang", bbox: [-6.33, 106.53, -6.0, 106.79] },
   { name: "Serang", bbox: [-6.22, 106.02, -5.98, 106.3] },
   { name: "Subang", bbox: [-6.75, 107.3, -6.2, 107.85] },
-  { name: "Sukabumi", bbox: [-7.3, 106.5, -6.72, 107.2] },
+  { name: "Kota Sukabumi", bbox: [-6.96, 106.89, -6.88, 106.96] },
+  { name: "Kab. Sukabumi", bbox: [-7.35, 106.4, -6.72, 107.25] },
 ];
 
 /**
@@ -48,6 +49,10 @@ function regionByName(value) {
   const target = clean(value).toLowerCase();
   const targetKey = regionNameKey(value);
   if (!target) return null;
+  // Data lama menyimpan "Sukabumi" tanpa membedakan kota dan kabupaten.
+  if (targetKey === "sukabumi") {
+    return CORPORATE_CITIES.find((city) => city.name === "Kab. Sukabumi");
+  }
   return (
     CORPORATE_CITIES.find((city) => city.name.toLowerCase() === target) ||
     CORPORATE_CITIES.find((city) => regionNameKey(city.name) === targetKey) ||

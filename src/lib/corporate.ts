@@ -9,7 +9,8 @@ export const CORPORATE_CITIES = [
   "Tangerang",
   "Serang",
   "Subang",
-  "Sukabumi",
+  "Kota Sukabumi",
+  "Kab. Sukabumi",
 ];
 
 /** Bbox yang sama dengan worker agar status koordinat konsisten di kedua sisi. */
@@ -22,7 +23,8 @@ const CORPORATE_CITY_BOUNDS: Record<string, [number, number, number, number]> = 
   Tangerang: [-6.33, 106.53, -6.0, 106.79],
   Serang: [-6.22, 106.02, -5.98, 106.3],
   Subang: [-6.75, 107.3, -6.2, 107.85],
-  Sukabumi: [-7.3, 106.5, -6.72, 107.2],
+  "Kota Sukabumi": [-6.96, 106.89, -6.88, 106.96],
+  "Kab. Sukabumi": [-7.35, 106.4, -6.72, 107.25],
 };
 
 function regionNameKey(value?: string): string {
@@ -94,7 +96,9 @@ function normalizeCoordinateSource(source?: string, sourceLeadId?: string): stri
 }
 
 export const CORPORATE_CITY_LABELS: Record<string, string> = {
-  Sukabumi: "Kab. Sukabumi",
+  Jakarta: "DKI Jakarta",
+  "Kota Sukabumi": "Kota Sukabumi",
+  "Kab. Sukabumi": "Kab. Sukabumi",
 };
 
 /** Seluruh wilayah awal yang bisa dipilih dari Corporate Engine. */
