@@ -208,6 +208,38 @@ export interface CorporateRefreshResult {
   failedCategories?: string[];
 }
 
+export interface CorporateRelabelMove {
+  id: string;
+  name: string;
+  from: string;
+  to: string;
+  area: string;
+  latitude: number;
+  longitude: number;
+  containsCoordinate: boolean;
+  reason: string;
+}
+
+export interface CorporateRelabelViolation {
+  id: string;
+  name: string;
+  city: string;
+  area: string;
+  latitude: number;
+  longitude: number;
+  reason: string;
+}
+
+export interface CorporateRelabelPlan {
+  total: number;
+  changed: number;
+  unchanged: number;
+  applied: number;
+  apply: boolean;
+  moves: CorporateRelabelMove[];
+  violations: CorporateRelabelViolation[];
+}
+
 export type CorporateRobotStage =
   | "finding"
   | "clarification"

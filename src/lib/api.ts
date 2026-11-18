@@ -4,6 +4,7 @@ import type {
   CorporateLead,
   CorporatePerson,
   CorporateRefreshResult,
+  CorporateRelabelPlan,
   CorporateRobotRunResult,
   CorporateRobotStatus,
 } from "./corporate";
@@ -134,6 +135,41 @@ export async function refreshCorporateCity(city: string): Promise<CorporateRefre
     throw new ApiError(500, "Respons pembaruan tidak dikenali.");
   }
   return body as unknown as CorporateRefreshResult;
+}
+
+/**
+ * Audit atau terapkan relabel wilayah dari baris yang sudah tersimpan.
+ * `apply: false` hanya membaca; `apply: true` mengubah kolom city saja.
+ */
+export async function relabelCorporateRegions(
+  apply = false,
+): Promise<CorporateRelabelPlan> {
+  const response = await fetch("/api/corporate/relabel", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ apply }),
+  });
+  const body = await readJson(response);
+  if (!response.ok) {
+    throw new ApiError(
+      response.status,
+      response.status === 401
+        ? "Sesi berakhir."
+        : typeof body?.error === "string"
+          ? body.error
+          : "Relabel wilayah belum berhasil.",
+    );
+  }
+  if (
+    !body ||
+    !Array.isArray(body.moves) ||
+    !Array.isArray(body.violations) ||
+    typeof body.changed !== "number"
+  ) {
+    throw new ApiError(500, "Respons audit relabel tidak dikenali.");
+  }
+  return body as unknown as CorporateRelabelPlan;
 }
 
 export interface CorporateEnrichResult {

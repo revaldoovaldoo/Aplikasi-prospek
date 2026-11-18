@@ -8,12 +8,14 @@ import {
   screeningReviewRequired,
   screeningState,
   type CorporateLead,
+  type CorporateRelabelPlan,
   type CorporateRobotJob,
   type CorporateRobotStatus,
 } from "../lib/corporate";
 import {
   detectCorporateRobotTelegram,
   fetchCorporateRobot,
+  relabelCorporateRegions,
   retryCorporateRobotTelegram,
   reviewCorporateScreening,
   saveCorporateRobotSettings,
@@ -122,6 +124,10 @@ interface RobotPanelProps {
   onTestTelegram: () => void;
   onRetryTelegram: () => void;
   onOpenLead: (lead: CorporateLead, evidence?: string[]) => void;
+  relabel: CorporateRelabelPlan | null;
+  relabelBusy: string;
+  onAuditRelabel: () => void;
+  onApplyRelabel: () => void;
 }
 
 function RobotPanel({
@@ -138,6 +144,10 @@ function RobotPanel({
   onTestTelegram,
   onRetryTelegram,
   onOpenLead,
+  relabel,
+  relabelBusy,
+  onAuditRelabel,
+  onApplyRelabel,
 }: RobotPanelProps) {
   const stats = status?.stats;
   const allJobs = status?.jobs ?? [];
@@ -215,6 +225,81 @@ function RobotPanel({
             uncertain tidak disertakan agar tidak terjadi duplikat.
           </span>
         </div>
+      </div>
+
+      <div className="robot-relabel">
+        <div className="robot-results-head">
+          <h3>Label wilayah</h3>
+          <span className="stat-note">
+            Memakai koordinat dan alamat tersimpan; tidak menarik ulang OSM.
+          </span>
+        </div>
+        <div className="robot-actions">
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={onAuditRelabel}
+            disabled={relabelBusy !== ""}
+          >
+            {relabelBusy === "audit" ? "Mengaudit…" : "Audit relabel"}
+          </button>
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={onApplyRelabel}
+            disabled={relabelBusy !== "" || !relabel || relabel.changed === 0}
+            title={
+              relabel
+                ? `${relabel.changed} lead akan dipindah wilayah`
+                : "Jalankan Audit relabel lebih dulu"
+            }
+          >
+            {relabelBusy === "apply" ? "Menerapkan…" : "Terapkan relabel"}
+          </button>
+        </div>
+        {relabel ? (
+          <div className="robot-relabel-body">
+            <p className="stat-note">
+              {relabel.total} lead diperiksa · {relabel.changed} pindah ·{" "}
+              {relabel.unchanged} tetap · {relabel.violations.length} titik perlu dicek
+              {relabel.apply ? ` · ${relabel.applied} diterapkan` : ""}
+            </p>
+            {relabel.moves.length === 0 ? (
+              <p className="stat-note">
+                Semua label wilayah sudah cocok dengan koordinat dan alamat lead.
+              </p>
+            ) : (
+              <ul className="robot-relabel-list">
+                {relabel.moves.slice(0, 50).map((move) => (
+                  <li key={move.id}>
+                    <strong>{move.name}</strong>
+                    <span className="robot-relabel-route">
+                      {move.from} → {move.to}
+                    </span>
+                    <span className="stat-note">{move.reason}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {relabel.moves.length > 50 ? (
+              <p className="stat-note">
+                Menampilkan 50 dari {relabel.moves.length} perpindahan.
+              </p>
+            ) : null}
+            {relabel.violations.length > 0 ? (
+              <div className="robot-relabel-violations">
+                <strong>Titik di luar semua wilayah (tidak dipindah):</strong>
+                <ul>
+                  {relabel.violations.slice(0, 20).map((item) => (
+                    <li key={item.id}>
+                      {item.name} · {item.city} · {item.latitude}, {item.longitude}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
       </div>
 
       <div className="robot-results-head">
@@ -594,6 +679,8 @@ export default function RobotPage({
   const [leadSearching, setLeadSearching] = useState(false);
   const [leadError, setLeadError] = useState("");
   const [screeningBusy, setScreeningBusy] = useState(false);
+  const [relabel, setRelabel] = useState<CorporateRelabelPlan | null>(null);
+  const [relabelBusy, setRelabelBusy] = useState("");
 
   async function loadRobot() {
     try {
@@ -650,6 +737,64 @@ export default function RobotPage({
       setError(errorMessage(detectError));
     } finally {
       setBusy("");
+    }
+  }
+
+  async function auditRelabel() {
+    setRelabelBusy("audit");
+    setError("");
+    setNotice("");
+    try {
+      const plan = await relabelCorporateRegions(false);
+      setRelabel(plan);
+      setNotice(
+        plan.changed > 0
+          ? `Audit relabel: ${plan.changed} lead akan pindah wilayah, ${plan.unchanged} sudah sesuai.`
+          : "Audit relabel: semua label sudah sesuai koordinat dan alamatnya.",
+      );
+    } catch (auditError) {
+      setError(errorMessage(auditError));
+    } finally {
+      setRelabelBusy("");
+    }
+  }
+
+  async function applyRelabel() {
+    setRelabelBusy("apply");
+    setError("");
+    setNotice("");
+    try {
+      // Selalu audit ulang tepat sebelum menulis agar daftar yang dikonfirmasi
+      // adalah daftar terbaru, bukan hasil audit lama.
+      const plan = await relabelCorporateRegions(false);
+      setRelabel(plan);
+      if (plan.changed === 0) {
+        setNotice("Tidak ada label yang perlu diubah.");
+        return;
+      }
+      const preview = plan.moves
+        .slice(0, 8)
+        .map((move) => `• ${move.name}: ${move.from} → ${move.to}`)
+        .join("\n");
+      const confirmed = window.confirm(
+        `Terapkan relabel ke ${plan.changed} lead?\n\n${preview}${
+          plan.moves.length > 8 ? `\n…dan ${plan.moves.length - 8} lainnya` : ""
+        }\n\nHanya label wilayah yang diubah; kontak, screening, dan penawaran tidak dihapus.`,
+      );
+      if (!confirmed) {
+        setNotice("Relabel dibatalkan; tidak ada data yang diubah.");
+        return;
+      }
+      const applied = await relabelCorporateRegions(true);
+      setRelabel(applied);
+      setNotice(
+        `Relabel diterapkan: ${applied.applied} lead dipindah, ${applied.unchanged} tetap.`,
+      );
+      await loadRobot();
+    } catch (applyError) {
+      setError(errorMessage(applyError));
+    } finally {
+      setRelabelBusy("");
     }
   }
 
@@ -810,6 +955,10 @@ export default function RobotPage({
         onTestTelegram={() => void testRobotTelegram()}
         onRetryTelegram={() => void retryRobotTelegram()}
         onOpenLead={openLead}
+        relabel={relabel}
+        relabelBusy={relabelBusy}
+        onAuditRelabel={() => void auditRelabel()}
+        onApplyRelabel={() => void applyRelabel()}
       />
 
       <CorporateLeadDialog
