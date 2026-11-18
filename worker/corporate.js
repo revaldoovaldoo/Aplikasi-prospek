@@ -742,7 +742,10 @@ export function phoneBoundToPic(personName, phone, text) {
         nearestToken = token;
       }
     }
-    if (nearestToken && nearest <= 180) {
+    // Satu blok identitas (mis. "Kepala Sekolah … Nomor Telp./HP …") bisa
+    // memuat beberapa baris. Batas 300 karakter tetap mensyaratkan nama dan
+    // nomor berada di halaman yang sama, bukan digabung dari dua halaman.
+    if (nearestToken && nearest <= 300) {
       // Label generik boleh ada di halaman, tetapi tidak boleh berada di
       // antara nama PIC dan nomornya. Contoh yang ditolak:
       // "Customer Service 0812..." tanpa nama PIC di dekat nomor.
