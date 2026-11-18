@@ -8,11 +8,27 @@ import {
   normalizeElements,
   normalizeOsmCoordinateSource,
   osmElementCenter,
+  refreshCacheReusable,
   resolveLeadCoordinates,
   sanitizePicName,
   screeningFieldsForRefresh,
   screeningFieldsForResearch,
 } from "../worker/corporate.js";
+
+test("cache refresh tidak dipakai ulang bila bbox wilayah berubah", () => {
+  const bbox = [-6.42, 106.34, -5.92, 106.8];
+  // Umur masih muda dan bbox sama: cache boleh dipakai ulang.
+  assert.equal(refreshCacheReusable(bbox.join(","), bbox, 60_000), true);
+  // Bbox diperluas: data lama tidak boleh menutupi wilayah baru.
+  assert.equal(
+    refreshCacheReusable([-6.33, 106.53, -6.0, 106.79].join(","), bbox, 60_000),
+    false,
+  );
+  // Belum pernah mencatat bbox (data lama): paksa tarik ulang.
+  assert.equal(refreshCacheReusable("", bbox, 60_000), false);
+  // Umur melewati batas: tetap tarik ulang.
+  assert.equal(refreshCacheReusable(bbox.join(","), bbox, 31 * 60 * 1000), false);
+});
 
 test("refresh kota mempertahankan konfirmasi review saat nama entitas sama", () => {
   const fields = screeningFieldsForRefresh(

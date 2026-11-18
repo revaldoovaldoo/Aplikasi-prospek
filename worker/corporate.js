@@ -424,7 +424,8 @@ const SCHEMA_SQL = [
   )`,
   `CREATE TABLE IF NOT EXISTS corporate_city_refresh (
     city TEXT PRIMARY KEY,
-    refreshed_at TEXT NOT NULL
+    refreshed_at TEXT NOT NULL,
+    bbox TEXT NOT NULL DEFAULT ''
   )`,
   `CREATE TABLE IF NOT EXISTS corporate_email_lookup (
     id TEXT PRIMARY KEY,
@@ -480,6 +481,15 @@ export async function ensureCorporateSchema(db) {
         } catch {
           /* kolom sudah ada */
         }
+      }
+      // Simpan bbox yang dipakai saat refresh. Bila cakupan wilayah diperluas,
+      // cache lama tidak boleh dipakai karena akan menyembunyikan wilayah baru.
+      try {
+        await db
+          .prepare("ALTER TABLE corporate_city_refresh ADD COLUMN bbox TEXT NOT NULL DEFAULT ''")
+          .run();
+      } catch {
+        /* kolom sudah ada */
       }
     })().catch((error) => {
       schemaPromise = undefined;
@@ -2408,6 +2418,16 @@ export async function enrichCorporateLead(db, id, env = {}) {
   };
 }
 
+/**
+ * Cache refresh hanya boleh dipakai ulang bila umurnya masih muda DAN bbox
+ * wilayahnya tidak berubah. Perluasan cakupan harus langsung menarik data.
+ */
+export function refreshCacheReusable(storedBbox, bbox, ageMs, minMs = REFRESH_MIN_MS) {
+  const current = Array.isArray(bbox) ? bbox.join(",") : "";
+  if (!current || !storedBbox || storedBbox !== current) return false;
+  return Number.isFinite(ageMs) && ageMs >= 0 && ageMs < minMs;
+}
+
 export async function refreshCorporateCity(db, cityName, seed) {
   const city = cityByName(cityName);
   if (!city) {
@@ -2419,12 +2439,12 @@ export async function refreshCorporateCity(db, cityName, seed) {
   await ensureCorporateSchema(db);
 
   const refreshRow = await db
-    .prepare("SELECT refreshed_at FROM corporate_city_refresh WHERE city = ?")
+    .prepare("SELECT refreshed_at, bbox FROM corporate_city_refresh WHERE city = ?")
     .bind(city.name)
     .first();
   if (refreshRow?.refreshed_at) {
     const age = Date.now() - Date.parse(refreshRow.refreshed_at);
-    if (Number.isFinite(age) && age < REFRESH_MIN_MS) {
+    if (refreshCacheReusable(refreshRow.bbox, city.bbox, age)) {
       const rows = await db
         .prepare(
           `SELECT ${CORPORATE_LEAD_FIELDS} FROM corporate_leads WHERE city = ?`,
@@ -2483,9 +2503,9 @@ export async function refreshCorporateCity(db, cityName, seed) {
     db.prepare("DELETE FROM corporate_leads WHERE city = ?").bind(city.name),
     db
       .prepare(
-        "INSERT INTO corporate_city_refresh (city, refreshed_at) VALUES (?, ?) ON CONFLICT(city) DO UPDATE SET refreshed_at = excluded.refreshed_at",
+        "INSERT INTO corporate_city_refresh (city, refreshed_at, bbox) VALUES (?, ?, ?) ON CONFLICT(city) DO UPDATE SET refreshed_at = excluded.refreshed_at, bbox = excluded.bbox",
       )
-      .bind(city.name, now),
+      .bind(city.name, now, city.bbox.join(",")),
   ];
   for (const lead of leads) {
     const prior = existing.get(lead.id) || seedById.get(lead.id) || {};
