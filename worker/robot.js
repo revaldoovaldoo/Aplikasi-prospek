@@ -17,6 +17,7 @@
 import {
   coordinateReadyForPublish,
   ensureCorporateSchema,
+  hasBoundPicPhoneEvidence,
   exaSearch,
   readPublicText,
   resolveLeadCoordinates,
@@ -1339,6 +1340,7 @@ function contactReadyForPublish(lead) {
     sanitizePicName(lead.contactName) &&
       isPicRole(lead.contactRole) &&
       validPicPhone(lead.phone) &&
+      hasBoundPicPhoneEvidence(lead) &&
       coordinateReadyForPublish(lead),
   );
 }
@@ -2965,6 +2967,57 @@ export async function sendTestTelegram(db, env, ownerId) {
       ? "Tes Telegram terkirim."
       : result.error || "Telegram belum dapat digunakan.",
   };
+}
+
+/**
+ * Intake kandidat nyata ke antrean Corporate Engine. Hanya identitas entitas
+ * dan website resmi yang dimasukkan; nama PIC, nomor, dan koordinat tetap
+ * harus ditemukan serta diverifikasi oleh agen Finding/Klarifikasi.
+ */
+export async function addRobotCandidates(db, candidates = []) {
+  await ensureCorporateSchema(db);
+  await ensureRobotSchema(db);
+  const now = nowIso();
+  const ids = [];
+  const rejected = [];
+  for (const candidate of Array.isArray(candidates) ? candidates.slice(0, 12) : []) {
+    const name = clean(candidate?.name);
+    const city = clean(candidate?.city);
+    const website = clean(candidate?.website);
+    const category = clean(candidate?.category).toLowerCase();
+    if (
+      !name ||
+      !city ||
+      !["company", "school", "hotel"].includes(category) ||
+      !/^https?:\/\//i.test(website)
+    ) {
+      rejected.push(name || "(tanpa nama)");
+      continue;
+    }
+    const slug = `${name}-${city}`
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 80);
+    const id = `manual:${slug}`;
+    await db
+      .prepare(
+        `INSERT INTO corporate_leads
+          (id, name, city, area, category, email, phone, website, updated_at)
+         VALUES (?, ?, ?, ?, ?, '', '', ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           name = excluded.name,
+           city = excluded.city,
+           area = CASE WHEN corporate_leads.area = '' THEN excluded.area ELSE corporate_leads.area END,
+           category = excluded.category,
+           website = excluded.website,
+           updated_at = excluded.updated_at`,
+      )
+      .bind(id, name, city, clean(candidate?.area), category, website, now)
+      .run();
+    ids.push(id);
+  }
+  return { ok: ids.length > 0, ids, rejected };
 }
 
 /**

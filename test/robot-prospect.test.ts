@@ -11,6 +11,10 @@ import {
   runFindingQualifierAgent,
 } from "../worker/robot.js";
 import {
+  hasBoundPicPhoneEvidence,
+  phoneBoundToPic,
+} from "../worker/corporate.js";
+import {
   isCorporateLeadAddable,
   isLeadPublishable,
   pruneIncompleteRobotCompanies,
@@ -73,6 +77,47 @@ test("Penilai kebutuhan meloloskan sinyal upgrade jaringan yang kuat", () => {
   assert.ok(result.score >= 48);
 });
 
+test("Nomor PIC harus muncul dekat nama PIC, bukan nomor CS/kantor", () => {
+  assert.equal(
+    phoneBoundToPic(
+      "Budi Santoso",
+      "0812-3456-7890",
+      "Kontak langsung: Budi Santoso, WhatsApp 0812-3456-7890. Alamat Jl. Contoh No.1.",
+    ),
+    true,
+  );
+  assert.equal(
+    phoneBoundToPic(
+      "Budi Santoso",
+      "0812-3456-7890",
+      "Customer Service 0812-3456-7890. Budi Santoso adalah direktur di halaman lain.",
+    ),
+    false,
+  );
+  assert.equal(
+    phoneBoundToPic(
+      "Budi Santoso",
+      "0812-3456-7890",
+      `${"Budi Santoso disebut di profil. ".repeat(20)}Kantor pusat 0812-3456-7890.`,
+    ),
+    false,
+  );
+  assert.equal(
+    hasBoundPicPhoneEvidence({
+      validationEvidence: ["Nomor PIC 0812-3456-7890 ditemukan pada website/sumber resmi."],
+    }),
+    false,
+  );
+  assert.equal(
+    hasBoundPicPhoneEvidence({
+      validationEvidence: [
+        "Nomor PIC 0812-3456-7890 tercantum bersama PIC Budi Santoso pada https://contoh.co.id/kontak.",
+      ],
+    }),
+    true,
+  );
+});
+
 test("Kurir Telegram menolak nama resepsionis, placeholder, dan beberapa nama", () => {
   const base = {
     name: "Hotel Contoh",
@@ -83,6 +128,9 @@ test("Kurir Telegram menolak nama resepsionis, placeholder, dan beberapa nama", 
     longitude: 106.8,
     coordinateSource: "OpenStreetMap node",
     screeningStatus: "clear",
+    validationEvidence: [
+      "Nomor PIC 08123456789 tercantum bersama PIC Budi Santoso pada https://contoh.co.id/kontak.",
+    ],
   };
   assert.equal(
     buildTelegramMessage({
@@ -176,6 +224,9 @@ const lead = {
   longitude: 106.8,
   coordinateSource: "OpenStreetMap node",
   screeningStatus: "clear",
+  validationEvidence: [
+    "Nomor PIC +62 812-3456-7890 tercantum bersama PIC Budi pada https://hotel.example.com/kontak.",
+  ],
 };
 
 test("Penulis Prospek menyimpan lead yang sudah lolos syarat Telegram", async () => {

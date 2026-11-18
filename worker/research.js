@@ -14,6 +14,7 @@
  */
 
 import {
+  boundPicPhoneEvidence,
   coordinateCandidateMatchesName,
   coordinateInRegion,
   coordinateReadyForPublish,
@@ -23,6 +24,7 @@ import {
   isRegionCoordinateSource,
   isRoadCoordinate,
   osmElementCenter,
+  phoneBoundToPic,
   readPublicText,
   regionCoordinate,
   rowToLead,
@@ -882,6 +884,22 @@ export async function researchCorporateLead(db, leadId, env = {}) {
     .map((citation) => `${citation.title || ""} ${citation.text || ""}`)
     .join(" ");
   const evidenceText = `${siteText} ${officialCitationText}`.trim();
+  // Sitasi panel dari website resmi atau profil bisnis (LinkedIn) boleh
+  // dipakai untuk mengikat nama PIC ke nomor, tetapi direktori/agregator
+  // generik tidak boleh menjadi bukti nomor PIC.
+  const bindingCitations = results.flatMap((result) =>
+    (result?.citations || []).filter((citation) => {
+      const host = hostOf(citation.url);
+      return (
+        (siteHost && host === siteHost) ||
+        /(^|\.)linkedin\.com$/i.test(host)
+      );
+    }),
+  );
+  const bindingCitationText = bindingCitations
+    .map((citation) => `${citation.title || ""} ${citation.text || ""}`)
+    .join(" ");
+  const phoneBindingText = `${evidenceText} ${bindingCitationText}`.trim();
 
   const directSiteReadable = site.pages.length > 0 && siteText.length >= 120;
   const citedSiteReadable = officialCitations.length > 0 && officialCitationText.length >= 160;
@@ -925,13 +943,28 @@ export async function researchCorporateLead(db, leadId, env = {}) {
   // Nomor harus datang dari Contact Finder/Verifier (yang diminta mencari
   // nomor PIC), bukan hanya nomor kantor yang kebetulan ada di lead lama.
   const phoneFromPanel = Boolean(clean(verifier.phone || contact.phone));
+  // Nomor harus muncul di halaman yang sama dengan nama PIC, bukan sekadar
+  // nomor kantor/CS yang ada di website. LinkedIn boleh menjadi sumber nama,
+  // tetapi nomor tetap harus terikat ke nama pada halaman resmi.
+  const boundPhonePage =
+    (site.pages || []).find((page) =>
+      phoneBoundToPic(personName, phone, page.text || ""),
+    ) ||
+    bindingCitations.find((citation) =>
+      phoneBoundToPic(personName, phone, `${citation.title || ""} ${citation.text || ""}`),
+    );
+  const phoneBoundToPerson = Boolean(
+    phoneBoundToPic(personName, phone, phoneBindingText),
+  );
   const phoneVerified = Boolean(
     hasValidPhone(phone) &&
       phoneFromPanel &&
-      (phoneOnSite || phoneInOfficialSource),
+      (phoneOnSite || phoneInOfficialSource) &&
+      phoneBoundToPerson,
   );
 
   const contactUrl =
+    boundPhonePage?.url ||
     citationForPerson(results, personName)?.url ||
     officialCitations[0]?.url ||
     lead.contactUrl ||
@@ -1088,9 +1121,17 @@ export async function researchCorporateLead(db, leadId, env = {}) {
     evidence.push("E-mail PIC belum tervalidasi sebagai milik entitas resmi.");
   }
   if (phoneVerified) {
-    evidence.push(`Nomor PIC ${phone} ditemukan pada website/sumber resmi.`);
+    evidence.push(
+      boundPicPhoneEvidence(personName, phone, contactUrl || website),
+    );
+  } else if (phoneBoundToPerson) {
+    evidence.push(
+      "Nomor PIC muncul dekat nama PIC tetapi belum lolos pemeriksaan sumber resmi.",
+    );
   } else {
-    evidence.push("Nomor PIC belum ditemukan pada website/sumber resmi.");
+    evidence.push(
+      "Nomor PIC tidak terbukti terikat ke nama PIC pada satu halaman resmi; nomor kantor/CS tidak dipakai.",
+    );
   }
   evidence.push(
     `Status validasi kontak PIC/koordinat: ${contactStatus}.`,

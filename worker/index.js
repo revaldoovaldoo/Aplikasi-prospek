@@ -23,6 +23,7 @@ import {
   sendQuoteWhatsApp,
 } from "./whatsapp.js";
 import {
+  addRobotCandidates,
   backfillCorporateScreening,
   detectTelegramChat,
   ensureCronOwner,
@@ -673,6 +674,36 @@ async function handleCorporateRobotSettings(request, env, auth) {
   }
 }
 
+async function handleCorporateRobotCandidates(request, env, auth) {
+  if (request.method !== "POST") {
+    return new Response(null, {
+      status: 405,
+      headers: { Allow: "POST", "Cache-Control": "private, no-store" },
+    });
+  }
+  if (!isSameOriginRequest(request, env.APP_ORIGIN)) {
+    return json({ error: "Forbidden" }, 403);
+  }
+  if (!env.DB) return json({ error: "Database belum tersedia" }, 500);
+  const user = await auth.getUser(request);
+  if (!user) return json({ error: "Sign in required" }, 401);
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: "Body bukan JSON yang valid" }, 400);
+  }
+  try {
+    return json(await addRobotCandidates(env.DB, body?.candidates));
+  } catch (error) {
+    console.error(
+      "corporate_robot_candidates_error",
+      error instanceof Error ? error.message : "unknown error",
+    );
+    return json({ error: "Kandidat belum bisa dimasukkan ke antrean." }, 502);
+  }
+}
+
 async function handleCorporateRobotRun(request, env, auth) {
   if (request.method !== "POST") {
     return new Response(null, {
@@ -1113,6 +1144,9 @@ function setup(env) {
       }
       if (url.pathname === "/api/corporate/robot/run") {
         return handleCorporateRobotRun(request, environment, auth);
+      }
+      if (url.pathname === "/api/corporate/robot/candidates") {
+        return handleCorporateRobotCandidates(request, environment, auth);
       }
       if (url.pathname === "/api/corporate/robot/telegram/test") {
         return handleCorporateRobotTelegramTest(request, environment, auth);

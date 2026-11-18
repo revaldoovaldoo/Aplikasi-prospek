@@ -685,6 +685,97 @@ export function rowToLead(row) {
   };
 }
 
+const PIC_PHONE_GENERIC_LABEL_RE =
+  /\b(customer\s*service|call\s*center|resepsionis|reception(?:ist)?|sales(?:\s*marketing)?|marketing|admin(?:istrasi)?|sekretariat|humas|hotline|kantor\s*pusat|head\s*office|office\s*phone)\b/i;
+
+function nameTokensForPhoneBinding(name) {
+  return clean(String(name || ""))
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter(
+      (token) =>
+        token.length >= 3 &&
+        !["bin", "binti", "the", "dan", "and", "pt", "cv", "dr", "h"].includes(token),
+    );
+}
+
+/**
+ * Nomor PIC hanya boleh dianggap milik PIC bila muncul dekat nama PIC pada
+ * teks halaman yang sama, dan tidak berada di blok kontak generik seperti
+ * customer service, resepsionis, sales, atau kantor pusat. Ini mencegah nomor
+ * sekolah/perusahaan yang kebetulan ada di website lolos sebagai nomor PIC.
+ */
+export function phoneBoundToPic(personName, phone, text) {
+  const nameTokens = nameTokensForPhoneBinding(personName);
+  const digits = String(phone || "").replace(/\D/g, "");
+  if (nameTokens.length === 0 || digits.length < 8 || !text) return false;
+  const tail = digits.slice(-8);
+  const source = String(text).replace(/\s+/g, " ");
+  const phonePattern = new RegExp(tail.split("").join("\\D{0,3}"), "g");
+  let match = phonePattern.exec(source);
+  while (match) {
+    const index = match.index;
+    const matchLength = match[0].length;
+    const windowStart = Math.max(0, index - 220);
+    const windowEnd = Math.min(source.length, index + matchLength + 220);
+    const window = source.slice(windowStart, windowEnd).toLowerCase();
+    const prefix = window
+      .slice(0, Math.max(0, index - windowStart))
+      .slice(-60);
+    if (
+      PIC_PHONE_GENERIC_LABEL_RE.test(prefix) &&
+      !nameTokens.some((token) => prefix.includes(token))
+    ) {
+      match = phonePattern.exec(source);
+      continue;
+    }
+    let nearest = Infinity;
+    let nearestToken = "";
+    for (const token of nameTokens) {
+      const tokenIndex = window.indexOf(token);
+      if (tokenIndex < 0) continue;
+      const distance = Math.abs(tokenIndex - (index - windowStart));
+      if (distance < nearest) {
+        nearest = distance;
+        nearestToken = token;
+      }
+    }
+    if (nearestToken && nearest <= 180) {
+      // Label generik boleh ada di halaman, tetapi tidak boleh berada di
+      // antara nama PIC dan nomornya. Contoh yang ditolak:
+      // "Customer Service 0812..." tanpa nama PIC di dekat nomor.
+      const betweenStart = Math.min(
+        window.indexOf(nearestToken),
+        index - windowStart,
+      );
+      const betweenEnd = Math.max(
+        window.indexOf(nearestToken),
+        index - windowStart,
+      );
+      const between = window.slice(betweenStart, betweenEnd + matchLength);
+      if (!PIC_PHONE_GENERIC_LABEL_RE.test(between)) return true;
+    }
+    match = phonePattern.exec(source);
+  }
+  return false;
+}
+
+/** Bukti terstruktur bahwa nomor PIC terikat ke nama PIC di halaman resmi. */
+export function boundPicPhoneEvidence(personName, phone, url) {
+  if (!clean(personName) || !clean(phone) || !clean(url)) return "";
+  return `Nomor PIC ${clean(phone)} tercantum bersama PIC ${clean(personName)} pada ${clean(url)}.`;
+}
+
+/** Gate publikasi: bukti nomor PIC harus terikat ke nama PIC, bukan nomor umum. */
+export function hasBoundPicPhoneEvidence(lead = {}) {
+  return (Array.isArray(lead.validationEvidence) ? lead.validationEvidence : []).some(
+    (item) =>
+      /^Nomor PIC .+ tercantum bersama PIC .+ pada https?:\/\//i.test(clean(item)),
+  );
+}
+
 /** Hasil OpenSanctions berisiko tinggi harus dikonfirmasi manusia. */
 export function screeningReviewRequired(lead = {}) {
   const status = clean(lead.screeningStatus).toLowerCase();
