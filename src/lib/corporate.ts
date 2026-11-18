@@ -11,6 +11,10 @@ export const CORPORATE_CITIES = [
   "Subang",
   "Kota Sukabumi",
   "Kab. Sukabumi",
+  "Cipanas",
+  "Kab. Cianjur",
+  "Kab. Lebak",
+  "Gunung Sindur",
 ];
 
 /** Bbox yang sama dengan worker agar status koordinat konsisten di kedua sisi. */
@@ -25,12 +29,16 @@ const CORPORATE_CITY_BOUNDS: Record<string, [number, number, number, number]> = 
   Subang: [-6.75, 107.3, -6.2, 107.85],
   "Kota Sukabumi": [-6.96, 106.89, -6.88, 106.96],
   "Kab. Sukabumi": [-7.35, 106.4, -6.72, 107.25],
+  Cipanas: [-6.75, 106.98, -6.65, 107.09],
+  "Kab. Cianjur": [-7.47, 106.72, -6.65, 107.45],
+  "Kab. Lebak": [-7.05, 105.95, -6.35, 106.65],
+  "Gunung Sindur": [-6.44, 106.67, -6.34, 106.79],
 };
 
 function regionNameKey(value?: string): string {
   return String(value || "")
     .toLowerCase()
-    .replace(/^(?:kota|kabupaten|kab\.?)\s+/, "")
+    .replace(/^(?:kota|kabupaten|kab\.?|kecamatan|kec\.?)\s+/, "")
     .replace(/\s+/g, " ")
     .trim();
 }

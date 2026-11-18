@@ -17,6 +17,12 @@ export const CORPORATE_CITIES = [
   { name: "Subang", bbox: [-6.75, 107.3, -6.2, 107.85] },
   { name: "Kota Sukabumi", bbox: [-6.96, 106.89, -6.88, 106.96] },
   { name: "Kab. Sukabumi", bbox: [-7.35, 106.4, -6.72, 107.25] },
+  // Wilayah fokus tambahan. "Cipanas" didahulukan agar lead di kawasan
+  // Puncak-Cianjur tercatat sebagai Cipanas, bukan Kab. Cianjur.
+  { name: "Cipanas", bbox: [-6.75, 106.98, -6.65, 107.09] },
+  { name: "Kab. Cianjur", bbox: [-7.47, 106.72, -6.65, 107.45] },
+  { name: "Kab. Lebak", bbox: [-7.05, 105.95, -6.35, 106.65] },
+  { name: "Gunung Sindur", bbox: [-6.44, 106.67, -6.34, 106.79] },
 ];
 
 /**
@@ -40,7 +46,7 @@ const DEFAULT_REGION =
 function regionNameKey(value) {
   return clean(value)
     .toLowerCase()
-    .replace(/^(?:kota|kabupaten|kab\.?)\s+/, "")
+    .replace(/^(?:kota|kabupaten|kab\.?|kecamatan|kec\.?)\s+/, "")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -970,16 +976,25 @@ export async function readCorporateLeads(db, seed) {
   }
 
   const leads = [];
+  // Bbox wilayah fokus saling beririsan (mis. Cipanas di dalam Kab. Cianjur,
+  // Gunung Sindur di utara Kab. Bogor). Satu elemen OSM tidak boleh muncul dua
+  // kali di daftar lead; urutan CORPORATE_CITIES menentukan label wilayahnya.
+  const seenLeadIds = new Set();
+  const pushUniqueLead = (lead) => {
+    if (seenLeadIds.has(lead.id)) return;
+    seenLeadIds.add(lead.id);
+    leads.push(lead);
+  };
   const cities = CORPORATE_CITIES.map((city) => {
     const updatedAt = refreshed.get(city.name) ?? seed.generatedAt;
     const cached = cacheByCity.get(city.name);
     if (cached?.length) {
-      leads.push(...cached);
+      for (const lead of cached) pushUniqueLead(lead);
     } else {
       for (const lead of seed.leads) {
         if (lead.city !== city.name) continue;
         const coordinate = resolveLeadCoordinates(lead);
-        leads.push({
+        pushUniqueLead({
           ...lead,
           latitude: coordinate.latitude,
           longitude: coordinate.longitude,

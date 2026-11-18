@@ -807,8 +807,15 @@ function searchResultMatches(lead, haystack) {
     .replace(/[^a-z0-9\s]/g, " ")
     .split(/\s+/)
     .filter((token) => token.length >= 4);
-  const city = clean(lead.city).toLowerCase().replace(/^kota\s+/, "");
-  const area = clean(lead.area).toLowerCase();
+  // Wilayah disimpan sebagai "Kab. Cianjur", "Kec. Gunung Sindur", dan
+  // sejenisnya; teks hasil pencarian biasanya hanya menulis nama wilayahnya.
+  const regionKey = (value) =>
+    clean(value)
+      .toLowerCase()
+      .replace(/^(?:kota|kabupaten|kab\.?|kecamatan|kec\.?)\s+/, "")
+      .trim();
+  const city = regionKey(lead.city);
+  const area = regionKey(lead.area);
   const hay = haystack.toLowerCase();
   return (
     tokens.some((token) => hay.includes(token)) ||

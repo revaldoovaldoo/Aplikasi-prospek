@@ -295,9 +295,10 @@ export default function CorporatePage({ companies, onVisitLead, onOpenCompany }:
           <p className="eyebrow">Data perusahaan publik</p>
           <h1>Corporate Engine</h1>
           <p className="page-sub">
-            Perusahaan, hotel, dan sekolah di seluruh DKI Jakarta, Kota Bogor, Kab. Bogor,
-            Kota Sukabumi, Kab. Sukabumi, Kota Depok, seluruh area Tangerang, Bekasi,
-            Serang, dan Subang.
+            Perusahaan, hotel, dan sekolah di seluruh DKI Jakarta, Kota Bogor, Kab. Bogor
+            (termasuk Gunung Sindur), Kota Sukabumi, Kab. Sukabumi, Kota Depok, seluruh
+            area Tangerang, Bekasi, Serang, Subang, Kab. Cianjur (termasuk Cipanas), dan
+            Kab. Lebak.
             Seluruh area di dalam wilayah tersebut ikut dicari. Klik nama perusahaan untuk
             melihat website, e-mail, nomor PIC, dan kontak IT. Tekan Prospek untuk
             memasukkannya secara manual ke Prospek.

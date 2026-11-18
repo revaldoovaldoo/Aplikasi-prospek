@@ -5,10 +5,12 @@ import {
   parseCoordinateInput,
 } from "../src/lib/coordinates.ts";
 import {
+  CORPORATE_CITIES as clientCities,
   coordinateInRegion as clientCoordinateInRegion,
   coordinateReviewStatus as clientCoordinateReviewStatus,
 } from "../src/lib/corporate.ts";
 import {
+  CORPORATE_CITIES as workerCityRegions,
   coordinateInRegion as workerCoordinateInRegion,
   coordinateReviewStatus as workerCoordinateReviewStatus,
 } from "../worker/corporate.js";
@@ -170,6 +172,49 @@ test("konfirmasi manual sah tidak menjadi missing karena bbox kota", () => {
   const nonManual = { ...manual, coordinateSource: "Nominatim/OpenStreetMap (nama cocok)" };
   assert.equal(clientCoordinateReviewStatus(nonManual), "missing");
   assert.equal(workerCoordinateReviewStatus(nonManual), "missing");
+});
+
+test("seluruh wilayah fokus tersedia di worker dan UI", () => {
+  const clientNames = clientCities.map((name) => String(name));
+  const workerNames = workerCityRegions.map((region: { name: string }) => region.name);
+  const required = [
+    "Jakarta",
+    "Kota Bogor",
+    "Kab. Bogor",
+    "Kota Sukabumi",
+    "Kab. Sukabumi",
+    "Depok",
+    "Tangerang",
+    "Serang",
+    "Subang",
+    "Cipanas",
+    "Kab. Cianjur",
+    "Kab. Lebak",
+    "Gunung Sindur",
+  ];
+  for (const region of required) {
+    assert.ok(clientNames.includes(region), `${region} hilang dari daftar UI`);
+    assert.ok(workerNames.includes(region), `${region} hilang dari daftar worker`);
+  }
+  assert.deepEqual(clientNames, workerNames);
+});
+
+test("koordinat Cianjur, Cipanas, Lebak, dan Gunung Sindur dikenali", () => {
+  const samples: Array<[string, string, number, number]> = [
+    ["Cipanas", "Cipanas", -6.705, 107.04],
+    ["Kab. Cianjur", "Cianjur", -6.82, 107.14],
+    ["Kab. Lebak", "Rangkasbitung", -6.4, 106.25],
+    ["Gunung Sindur", "Gunung Sindur", -6.39, 106.73],
+  ];
+  for (const [city, area, latitude, longitude] of samples) {
+    assert.equal(clientCoordinateInRegion(city, area, latitude, longitude), true, city);
+    assert.equal(workerCoordinateInRegion(city, area, latitude, longitude), true, city);
+  }
+  // Nama wilayah tanpa prefiks tetap harus cocok.
+  assert.equal(workerCoordinateInRegion("Cianjur", undefined, -6.82, 107.14), true);
+  assert.equal(workerCoordinateInRegion("Lebak", undefined, -6.4, 106.25), true);
+  assert.equal(clientCoordinateInRegion(undefined, "Kec. Gunung Sindur", -6.39, 106.73), true);
+  assert.equal(workerCoordinateInRegion(undefined, "Kecamatan Cipanas", -6.705, 107.04), true);
 });
 
 test("format koordinat kosong tidak menampilkan nol", () => {
