@@ -436,8 +436,11 @@ export function screeningReviewRequired(lead: {
   screeningReviewedAt?: string;
 }): boolean {
   const status = String(lead.screeningStatus || "").trim().toLowerCase();
-  // Hanya hasil clear yang boleh lolos. Review, error, disabled, dan status
-  // kosong (belum diperiksa) semuanya membutuhkan konfirmasi manusia.
+  // Error (mis. kuota OpenSanctions HTTP 402) tidak boleh menahan lead
+  // selamanya; lead tetap ditandai error untuk review manusia. Status yang
+  // belum diperiksa/disabled serta review yang belum dikonfirmasi tetap
+  // memblokir publikasi.
+  if (status === "error") return false;
   return status !== "clear" && !String(lead.screeningReviewedAt || "").trim();
 }
 

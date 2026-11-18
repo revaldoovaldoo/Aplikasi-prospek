@@ -694,9 +694,13 @@ async function handleCorporateRobotRun(request, env, auth) {
   }
   try {
     const limit = Math.max(1, Math.min(8, Number(body?.limit) || 4));
+    const leadIds = Array.isArray(body?.leadIds)
+      ? body.leadIds.filter((id) => typeof id === "string" && id.trim()).slice(0, 12)
+      : [];
     const result = await runCorporateRobot(env.DB, env, {
       ownerId: user.sub,
       limit,
+      leadIds,
       force: true,
       source: "manual",
     });

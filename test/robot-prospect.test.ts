@@ -631,7 +631,7 @@ test("Prospek robot tidak menyimpan titik pusat wilayah", () => {
   assert.equal(cleaned.companies[0].coordinateSource, "");
 });
 
-test("screening error, disabled, dan kosong tanpa konfirmasi menahan publish", () => {
+test("screening error tidak menahan publish; status yang belum diperiksa tetap menahan", () => {
   const lead = {
     name: "Hotel Contoh",
     contactName: "Budi",
@@ -640,7 +640,16 @@ test("screening error, disabled, dan kosong tanpa konfirmasi menahan publish", (
     longitude: 106.8,
     coordinateSource: "OpenStreetMap node",
   };
-  for (const screeningStatus of ["error", "disabled", ""]) {
+  assert.equal(
+    isLeadPublishable({ ...lead, screeningStatus: "error" } as never),
+    true,
+    "error kuota harus tetap bisa diproses dan ditandai untuk review",
+  );
+  assert.equal(
+    isCorporateLeadAddable({ ...lead, screeningStatus: "error" } as never, true),
+    true,
+  );
+  for (const screeningStatus of ["disabled", ""]) {
     assert.equal(
       isLeadPublishable({ ...lead, screeningStatus } as never),
       false,
@@ -652,18 +661,10 @@ test("screening error, disabled, dan kosong tanpa konfirmasi menahan publish", (
       `manual ${screeningStatus || "kosong"} harus tertahan`,
     );
   }
-  assert.equal(
-    isLeadPublishable({
-      ...lead,
-      screeningStatus: "error",
-      screeningReviewedAt: "2026-11-17T04:00:00.000Z",
-    } as never),
-    true,
-  );
 });
 
-test("publish Prospek menolak screening error/disabled/kosong tanpa konfirmasi", async () => {
-  for (const screeningStatus of ["error", "disabled", ""]) {
+test("publish Prospek menolak screening disabled/kosong tanpa konfirmasi", async () => {
+  for (const screeningStatus of ["disabled", ""]) {
     const result = await publishLeadToProspect(null as never, "owner-1", {
       ...lead,
       screeningStatus,

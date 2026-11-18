@@ -3085,10 +3085,18 @@ export async function runCorporateRobot(db, env = {}, options = {}) {
       );
       return null;
     });
+    const selectedLeadIds = (Array.isArray(options.leadIds) ? options.leadIds : [])
+      .map((id) => clean(String(id || "")))
+      .filter(Boolean)
+      .slice(0, 12);
+    const selectedClause =
+      selectedLeadIds.length > 0
+        ? `(j.next_run_at <= ? OR j.lead_id IN (${selectedLeadIds.map(() => "?").join(", ")}))`
+        : "j.next_run_at <= ?";
     const rows = await db
       .prepare(
         `${JOB_SELECT}
-         WHERE j.next_run_at <= ?
+         WHERE ${selectedClause}
            AND j.stage IN ('finding', 'clarification', 'publish', 'publish_telegram', 'publish_prospect')
          ORDER BY
            CASE j.stage
@@ -3102,7 +3110,7 @@ export async function runCorporateRobot(db, env = {}, options = {}) {
            j.updated_at ASC
          LIMIT ?`,
       )
-      .bind(nowIso(), limit)
+      .bind(nowIso(), ...selectedLeadIds, limit)
       .all();
 
     const processRow = async (row) => {
