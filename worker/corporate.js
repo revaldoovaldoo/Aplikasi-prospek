@@ -552,9 +552,13 @@ export function normalizeElements(elements, city, category, keep) {
       .trim()
       .slice(0, 60);
     const website = normalizeWebsite(tags.website || tags["contact:website"] || tags.url);
+    // `out center` menaruh koordinat way/relation di center, sedangkan node
+    // memakai lat/lon di level elemen. Tanpa fallback ini semua node OSM
+    // (banyak sekolah, hotel, dan kantor) kehilangan titik entitas dan hanya
+    // mendapat pusat wilayah.
     const center = element.center || {};
-    const latitude = Number(center.lat);
-    const longitude = Number(center.lon);
+    const latitude = Number(center.lat ?? element.lat);
+    const longitude = Number(center.lon ?? element.lon);
     const elementType = clean(element.type).toLowerCase();
     const coordinateSource =
       Number.isFinite(latitude) && Number.isFinite(longitude)

@@ -18,6 +18,26 @@ import {
   screeningFieldsForResearch,
 } from "../worker/corporate.js";
 
+test("node OSM memakai lat/lon elemen, bukan hanya center", () => {
+  const [nodeLead] = normalizeElements(
+    [
+      {
+        type: "node",
+        id: 123,
+        lat: -6.6,
+        lon: 106.8,
+        tags: { name: "Hotel Node", tourism: "hotel" },
+      },
+    ],
+    "Kab. Bogor",
+    "hotel",
+    5,
+  );
+  assert.equal(nodeLead.latitude, -6.6);
+  assert.equal(nodeLead.longitude, 106.8);
+  assert.equal(nodeLead.coordinateSource, "OpenStreetMap node");
+});
+
 test("lead duplikat mengikuti area yang disebut sebelum bbox terkecil", () => {
   const byName = (name) => CORPORATE_CITIES.find((city) => city.name === name);
   const tangerang = byName("Tangerang");
