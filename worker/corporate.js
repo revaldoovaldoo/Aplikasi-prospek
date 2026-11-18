@@ -393,6 +393,9 @@ const OVERPASS_ENDPOINTS = [
 const USER_AGENT =
   "HalloPane/1.0 (Corporate Engine; +https://site-112732548e6d4039b0803f571aea6817.freebuff.page)";
 const REFRESH_MIN_MS = 30 * 60 * 1000;
+// Naikkan versi ini bila cara membaca data OSM berubah (mis. perbaikan
+// koordinat), agar cache lama otomatis ditarik ulang, bukan dianggap segar.
+const REFRESH_DATA_VERSION = 2;
 const FETCH_TIMEOUT_MS = 25000;
 
 const SCHEMA_SQL = [
@@ -2443,9 +2446,20 @@ export function regionCandidateRank(lead, city) {
  * Cache refresh hanya boleh dipakai ulang bila umurnya masih muda DAN bbox
  * wilayahnya tidak berubah. Perluasan cakupan harus langsung menarik data.
  */
-export function refreshCacheReusable(storedBbox, bbox, ageMs, minMs = REFRESH_MIN_MS) {
-  const current = Array.isArray(bbox) ? bbox.join(",") : "";
-  if (!current || !storedBbox || storedBbox !== current) return false;
+export function refreshCacheKey(bbox, version = REFRESH_DATA_VERSION) {
+  const area = Array.isArray(bbox) ? bbox.join(",") : "";
+  return area ? `${area}|v${version}` : "";
+}
+
+export function refreshCacheReusable(
+  storedKey,
+  bbox,
+  ageMs,
+  minMs = REFRESH_MIN_MS,
+  version = REFRESH_DATA_VERSION,
+) {
+  const current = refreshCacheKey(bbox, version);
+  if (!current || !storedKey || storedKey !== current) return false;
   return Number.isFinite(ageMs) && ageMs >= 0 && ageMs < minMs;
 }
 
@@ -2526,7 +2540,7 @@ export async function refreshCorporateCity(db, cityName, seed) {
       .prepare(
         "INSERT INTO corporate_city_refresh (city, refreshed_at, bbox) VALUES (?, ?, ?) ON CONFLICT(city) DO UPDATE SET refreshed_at = excluded.refreshed_at, bbox = excluded.bbox",
       )
-      .bind(city.name, now, city.bbox.join(",")),
+      .bind(city.name, now, refreshCacheKey(city.bbox)),
   ];
   for (const lead of leads) {
     const prior = existing.get(lead.id) || seedById.get(lead.id) || {};

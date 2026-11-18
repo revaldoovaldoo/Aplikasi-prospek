@@ -9,6 +9,7 @@ import {
   normalizeElements,
   normalizeOsmCoordinateSource,
   osmElementCenter,
+  refreshCacheKey,
   refreshCacheReusable,
   regionCandidateRank,
   regionCoordinate,
@@ -59,19 +60,25 @@ test("Kota Sukabumi memakai pusat kotanya, bukan pusat kabupaten", () => {
   assert.notEqual(coordinate.latitude, regionCoordinate("Kab. Sukabumi", "").latitude);
 });
 
-test("cache refresh tidak dipakai ulang bila bbox wilayah berubah", () => {
+test("cache refresh tidak dipakai ulang bila bbox atau versi data berubah", () => {
   const bbox = [-6.42, 106.34, -5.92, 106.8];
-  // Umur masih muda dan bbox sama: cache boleh dipakai ulang.
-  assert.equal(refreshCacheReusable(bbox.join(","), bbox, 60_000), true);
+  // Umur masih muda, bbox dan versi sama: cache boleh dipakai ulang.
+  assert.equal(refreshCacheReusable(refreshCacheKey(bbox), bbox, 60_000), true);
   // Bbox diperluas: data lama tidak boleh menutupi wilayah baru.
   assert.equal(
-    refreshCacheReusable([-6.33, 106.53, -6.0, 106.79].join(","), bbox, 60_000),
+    refreshCacheReusable(
+      refreshCacheKey([-6.33, 106.53, -6.0, 106.79]),
+      bbox,
+      60_000,
+    ),
     false,
   );
-  // Belum pernah mencatat bbox (data lama): paksa tarik ulang.
+  // Belum pernah mencatat cache: paksa tarik ulang.
   assert.equal(refreshCacheReusable("", bbox, 60_000), false);
+  // Versi pembacaan data lama: tarik ulang walau bbox sama.
+  assert.equal(refreshCacheReusable(refreshCacheKey(bbox, 1), bbox, 60_000), false);
   // Umur melewati batas: tetap tarik ulang.
-  assert.equal(refreshCacheReusable(bbox.join(","), bbox, 31 * 60 * 1000), false);
+  assert.equal(refreshCacheReusable(refreshCacheKey(bbox), bbox, 31 * 60 * 1000), false);
 });
 
 test("refresh kota mempertahankan konfirmasi review saat nama entitas sama", () => {
