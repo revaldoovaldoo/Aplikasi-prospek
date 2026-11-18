@@ -724,7 +724,9 @@ async function handleCorporateRobotRun(request, env, auth) {
     /* body opsional */
   }
   try {
-    const limit = Math.max(1, Math.min(8, Number(body?.limit) || 4));
+    // Satu lead per invokasi agar kuota subrequest Worker tidak habis di
+    // tengah riset lead berikutnya.
+    const limit = 1;
     const leadIds = Array.isArray(body?.leadIds)
       ? body.leadIds.filter((id) => typeof id === "string" && id.trim()).slice(0, 12)
       : [];
@@ -880,7 +882,7 @@ async function handleCorporateRobotCron(request, env) {
     await markCronTick(env.DB);
     await ensureCronOwner(env.DB);
     const result = await runRobotBatchAndEnsureWebhook(env.DB, env, {
-      limit: Math.max(1, Math.min(12, Number(body?.limit) || 4)),
+      limit: 1,
       force: true,
       source: "cron",
     });
@@ -923,7 +925,7 @@ async function handleCorporateRobotCronOidc(request, env) {
     await markCronTick(env.DB);
     await ensureCronOwner(env.DB);
     const result = await runRobotBatchAndEnsureWebhook(env.DB, env, {
-      limit: Math.max(1, Math.min(12, Number(body?.limit) || 4)),
+      limit: 1,
       force: true,
       source: "github-oidc",
     });
@@ -1232,7 +1234,7 @@ export default {
       await markCronTick(env.DB);
       await ensureCronOwner(env.DB);
       await runRobotBatchAndEnsureWebhook(env.DB, env, {
-        limit: 3,
+        limit: 1,
         force: false,
         source: "cron",
       });

@@ -3148,6 +3148,10 @@ export async function runCorporateRobot(db, env = {}, options = {}) {
     // Bila lead dipilih eksplisit, hanya lead itu yang diproses, tanpa
     // mencampurnya dengan antrean jatuh tempo lain. Ini membuat retrigger
     // manual deterministik untuk audit dan demo tiga vertical.
+    // Satu lead per invokasi: riset memakai banyak subrequest (Exa, website,
+    // DNS, OpenSanctions). Memproses beberapa lead sekaligus membuat Cloudflare
+    // menghentikan lead berikutnya dengan "Too many subrequests".
+    const effectiveLimit = selectedLeadIds.length > 0 ? 1 : limit;
     if (selectedLeadIds.length > 0 && options.restartSelected) {
       const now = nowIso();
       await db
@@ -3207,7 +3211,10 @@ export async function runCorporateRobot(db, env = {}, options = {}) {
            j.updated_at ASC
          LIMIT ?`,
       )
-      .bind(...(selectedLeadIds.length > 0 ? selectedLeadIds : [nowIso()]), limit)
+      .bind(
+        ...(selectedLeadIds.length > 0 ? selectedLeadIds : [nowIso()]),
+        effectiveLimit,
+      )
       .all();
 
     const processRow = async (row) => {
