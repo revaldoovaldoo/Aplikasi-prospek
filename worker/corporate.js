@@ -2459,8 +2459,13 @@ export function regionCandidateRank(lead, city) {
     latitude !== 0 &&
     longitude !== 0;
   // Bukti terkuat: titik entitas benar-benar berada di bbox wilayah itu.
+  // Sengaja hanya bbox kota ini, bukan ikut area, agar alamat tidak bisa
+  // "membuktikan" wilayah yang titiknya justru di luar bbox tersebut.
   const contains = hasCoordinate
-    ? coordinateInRegion(city.name, lead?.area, latitude, longitude, 0.02) === true
+    ? latitude >= city.bbox[0] - 0.02 &&
+      latitude <= city.bbox[2] + 0.02 &&
+      longitude >= city.bbox[1] - 0.02 &&
+      longitude <= city.bbox[3] + 0.02
       ? 0
       : 1
     : 1;
@@ -2487,6 +2492,108 @@ function regionRankBetter(left, right) {
  * bbox paling spesifik. Dipakai saat menulis hasil refresh agar label tidak
  * bergantung pada wilayah mana yang kebetulan di-refresh terakhir.
  */
+/**
+ * Rencana relabel dari baris yang sudah tersimpan, tanpa menarik ulang OSM.
+ * Label dihitung dengan aturan yang sama seperti penulisan hasil refresh:
+ * koordinat, lalu area alamat, lalu bbox paling spesifik. Baris yang sudah
+ * benar tidak dimasukkan, dan baris yang titiknya di luar semua bbox dicatat
+ * sebagai pelanggaran, bukan dipindah diam-diam.
+ */
+export function planCorporateRelabel(rows = []) {
+  const cityNames = CORPORATE_CITIES.map((city) => city.name);
+  const moves = [];
+  const violations = [];
+  let unchanged = 0;
+  for (const row of rows) {
+    if (!row || !row.id) continue;
+    const lead = {
+      id: row.id,
+      name: clean(row.name),
+      area: clean(row.area),
+      latitude: Number(row.latitude),
+      longitude: Number(row.longitude),
+      city: clean(row.city),
+    };
+    const to = chooseLeadCity(lead, [lead.city, ...cityNames]);
+    const hasCoordinate =
+      Number.isFinite(lead.latitude) &&
+      Number.isFinite(lead.longitude) &&
+      lead.latitude !== 0 &&
+      lead.longitude !== 0;
+    const contains = hasCoordinate
+      ? coordinateInRegion(to, lead.area, lead.latitude, lead.longitude, 0.02) === true
+      : null;
+    if (contains === false) {
+      violations.push({
+        id: lead.id,
+        name: lead.name,
+        city: lead.city,
+        area: lead.area,
+        latitude: lead.latitude,
+        longitude: lead.longitude,
+        reason: "Koordinat tidak berada di bbox wilayah mana pun",
+      });
+      continue;
+    }
+    if (!to || to === lead.city) {
+      unchanged += 1;
+      continue;
+    }
+    const fromRegion = CORPORATE_CITIES.find((city) => city.name === lead.city);
+    const toRegion = CORPORATE_CITIES.find((city) => city.name === to);
+    const fromRank = fromRegion ? regionCandidateRank(lead, fromRegion) : null;
+    const toRank = toRegion ? regionCandidateRank(lead, toRegion) : null;
+    let reason = `bbox ${to} lebih spesifik untuk titik ini`;
+    if (toRank && fromRank && toRank[0] === 0 && fromRank[0] === 1) {
+      reason = `titik entitas (${lead.latitude}, ${lead.longitude}) berada di dalam bbox ${to}`;
+    } else if (toRank && fromRank && toRank[1] === 0 && fromRank[1] === 1) {
+      reason = `alamat "${lead.area}" termasuk wilayah ${to}`;
+    }
+    moves.push({
+      id: lead.id,
+      name: lead.name,
+      from: lead.city,
+      to,
+      area: lead.area,
+      latitude: lead.latitude,
+      longitude: lead.longitude,
+      containsCoordinate: contains === true,
+      reason,
+    });
+  }
+  return {
+    total: rows.length,
+    changed: moves.length,
+    unchanged,
+    violations,
+    moves,
+  };
+}
+
+/** Terapkan (atau audit saja) relabel dari data D1 yang sudah tersimpan. */
+export async function relabelCorporateLeads(db, options = {}) {
+  await ensureCorporateSchema(db);
+  const apply = options.apply === true;
+  const rows = await db
+    .prepare(
+      "SELECT id, name, city, area, latitude, longitude FROM corporate_leads",
+    )
+    .all();
+  const plan = planCorporateRelabel(rows.results ?? []);
+  if (!apply) return { ...plan, applied: 0, apply: false };
+
+  const now = new Date().toISOString();
+  let applied = 0;
+  for (const move of plan.moves) {
+    const result = await db
+      .prepare("UPDATE corporate_leads SET city = ?, updated_at = ? WHERE id = ?")
+      .bind(move.to, now, move.id)
+      .run();
+    applied += Number(result.meta?.changes || 0);
+  }
+  return { ...plan, applied, apply: true };
+}
+
 export function chooseLeadCity(lead, cityNames = []) {
   let best = null;
   for (const name of cityNames) {

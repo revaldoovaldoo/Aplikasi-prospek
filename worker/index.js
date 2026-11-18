@@ -7,6 +7,7 @@ import {
   isCorporateLeadComplete,
   readCorporateLeads,
   refreshCorporateCity,
+  relabelCorporateLeads,
 } from "./corporate.js";
 import {
   repairCorporateCoordinates,
@@ -567,6 +568,41 @@ async function handleCorporateRobotStatus(request, env, auth) {
       error instanceof Error ? error.message : "unknown error",
     );
     return json({ error: "Status robot belum bisa dimuat." }, 502);
+  }
+}
+
+/**
+ * Relabel wilayah sekali jalan dari baris D1 yang tersimpan, tanpa Overpass.
+ * Body `{ apply: true }` menulis perubahan; tanpa itu hanya audit read-only
+ * yang menampilkan lead mana yang pindah, alasannya, dan bukti koordinat.
+ */
+async function handleCorporateRelabel(request, env, auth) {
+  if (request.method !== "POST") {
+    return new Response(null, {
+      status: 405,
+      headers: { Allow: "POST", "Cache-Control": "private, no-store" },
+    });
+  }
+  if (!isSameOriginRequest(request, env.APP_ORIGIN)) {
+    return json({ error: "Forbidden" }, 403);
+  }
+  if (!env.DB) return json({ error: "Database belum tersedia" }, 500);
+  const user = await auth.getUser(request);
+  if (!user) return json({ error: "Sign in required" }, 401);
+  let body = {};
+  try {
+    body = await request.json();
+  } catch {
+    /* apply opsional */
+  }
+  try {
+    return json(await relabelCorporateLeads(env.DB, { apply: body?.apply === true }));
+  } catch (error) {
+    console.error(
+      "corporate_relabel_api_error",
+      error instanceof Error ? error.message : "unknown error",
+    );
+    return json({ error: "Relabel wilayah belum berhasil." }, 502);
   }
 }
 
@@ -1143,6 +1179,9 @@ function setup(env) {
       }
       if (url.pathname === "/api/corporate/screening/backfill") {
         return handleCorporateScreeningBackfill(request, environment, auth);
+      }
+      if (url.pathname === "/api/corporate/relabel") {
+        return handleCorporateRelabel(request, environment, auth);
       }
       if (url.pathname === "/api/corporate/robot/run") {
         return handleCorporateRobotRun(request, environment, auth);

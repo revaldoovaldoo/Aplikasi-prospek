@@ -11,6 +11,8 @@ import {
   normalizeElements,
   normalizeOsmCoordinateSource,
   osmElementCenter,
+  planCorporateRelabel,
+  relabelCorporateLeads,
   refreshCacheKey,
   refreshCacheReusable,
   regionCandidateRank,
@@ -104,6 +106,134 @@ test("label wilayah dipilih dari bukti, bukan urutan refresh", () => {
   );
 });
 
+const relabelRows = [
+  {
+    id: "osm:node/1",
+    name: "Hotel Sukabumi Timur",
+    city: "Kab. Cianjur",
+    area: "",
+    latitude: -6.99,
+    longitude: 106.55,
+  },
+  {
+    id: "osm:node/2",
+    name: "Sekolah Parung",
+    city: "Kota Bogor",
+    area: "Kabupaten Bogor",
+    latitude: -6.421,
+    longitude: 106.733,
+  },
+  {
+    id: "osm:node/3",
+    name: "Kantor Tangsel",
+    city: "Depok",
+    area: "South Tangerang",
+    latitude: -6.36,
+    longitude: 106.71,
+  },
+  {
+    id: "osm:node/4",
+    name: "Hotel Jakarta",
+    city: "Jakarta",
+    area: "",
+    latitude: -6.18,
+    longitude: 106.83,
+  },
+  {
+    id: "osm:node/5",
+    name: "Titik Rusak",
+    city: "Jakarta",
+    area: "",
+    latitude: -7.5,
+    longitude: 110.2,
+  },
+];
+
+/** Bbox wilayah itu sendiri, tanpa bantuan nama area. */
+function bboxContains(cityName, latitude, longitude) {
+  const city = CORPORATE_CITIES.find((item) => item.name === cityName);
+  if (!city) return false;
+  const [south, west, north, east] = city.bbox;
+  return (
+    latitude >= south - 0.02 &&
+    latitude <= north + 0.02 &&
+    longitude >= west - 0.02 &&
+    longitude <= east + 0.02
+  );
+}
+
+test("rencana relabel menjelaskan perpindahan dan tidak memindah titik rusak", () => {
+  const plan = planCorporateRelabel(relabelRows);
+  assert.equal(plan.total, 5);
+  assert.equal(plan.changed, 3);
+  assert.equal(plan.unchanged, 1);
+  assert.equal(plan.violations.length, 1);
+  assert.equal(plan.violations[0].id, "osm:node/5");
+  const byId = new Map(plan.moves.map((move) => [move.id, move]));
+  assert.equal(byId.get("osm:node/1").to, "Kab. Sukabumi");
+  assert.match(byId.get("osm:node/1").reason, /bbox Kab\. Sukabumi/);
+  assert.equal(byId.get("osm:node/2").to, "Kab. Bogor");
+  assert.match(byId.get("osm:node/2").reason, /bbox Kab\. Bogor/);
+  assert.equal(byId.get("osm:node/3").to, "Tangerang");
+  // Setiap perpindahan wajib punya bukti bahwa wilayah tujuan memuat titiknya.
+  for (const move of plan.moves) {
+    assert.equal(move.containsCoordinate, true, move.id);
+    assert.equal(bboxContains(move.to, move.latitude, move.longitude), true, move.id);
+  }
+});
+
+function fakeRelabelDb(rows) {
+  const updates = [];
+  return {
+    updates,
+    prepare(sql) {
+      if (/SELECT id, name, city, area, latitude, longitude FROM corporate_leads/.test(sql)) {
+        return { all: async () => ({ results: rows }) };
+      }
+      if (/UPDATE corporate_leads SET city/.test(sql)) {
+        return {
+          bind: (...args) => ({
+            run: async () => {
+              updates.push(args);
+              return { meta: { changes: 1 } };
+            },
+          }),
+        };
+      }
+      const chain = {
+        bind: () => chain,
+        run: async () => ({ meta: { changes: 1 } }),
+        all: async () => ({ results: [] }),
+        first: async () => null,
+      };
+      return chain;
+    },
+  };
+}
+
+test("relabel default hanya audit, apply baru menulis", async () => {
+  const auditDb = fakeRelabelDb(relabelRows);
+  const audit = await relabelCorporateLeads(auditDb);
+  assert.equal(audit.apply, false);
+  assert.equal(audit.applied, 0);
+  assert.equal(audit.changed, 3);
+  assert.equal(auditDb.updates.length, 0);
+
+  const applyDb = fakeRelabelDb(relabelRows);
+  const applied = await relabelCorporateLeads(applyDb, { apply: true });
+  assert.equal(applied.apply, true);
+  assert.equal(applied.applied, 3);
+  assert.equal(applyDb.updates.length, 3);
+  assert.deepEqual(
+    applyDb.updates.map((args) => [args[0], args[2]]).sort(),
+    [
+      ["Kab. Bogor", "osm:node/2"],
+      ["Kab. Sukabumi", "osm:node/1"],
+      ["Tangerang", "osm:node/3"],
+    ],
+  );
+});
+
 test("urutan refresh tidak mengubah label wilayah lead", () => {
   const lead = { area: "", latitude: -6.99, longitude: 106.55 };
   // Refresh Kab. Sukabumi dulu, lalu Kab. Cianjur yang bbox-nya beririsan.
@@ -149,7 +279,7 @@ test("label wilayah selalu wilayah yang memuat koordinat lead", () => {
     const city = chooseLeadCity(sample, allCities);
     assert.ok(city, `tidak ada wilayah untuk ${sample.area}`);
     assert.equal(
-      coordinateInRegion(city, sample.area, sample.latitude, sample.longitude),
+      bboxContains(city, sample.latitude, sample.longitude),
       true,
       `${sample.area} diberi label ${city} yang tidak memuat titiknya`,
     );
