@@ -37,7 +37,8 @@ jobs:
           # Setiap tick memproses maksimal 2 lead agar subrequest Cloudflare
           # tidak jebol; antrean besar tetap habis karena tick sangat rapat.
           ROBOT_LIMIT: "2"
-          TICK_PAUSE_SECONDS: "165"
+          # Jeda antar tick menjaga kuota tulis D1 dan CPU harian tetap aman.
+          TICK_PAUSE_SECONDS: "240"
           RUN_SECONDS: "20400"
         run: |
           set -uo pipefail
