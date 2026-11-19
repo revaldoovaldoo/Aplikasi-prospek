@@ -1745,6 +1745,13 @@ export async function auditTelegramProspects(db, ownerId) {
     } else if (row.job_stage === "publish_prospect") {
       queued += 1;
       continue;
+    } else if (!prospectLeadReady(rowToLead(row))) {
+      // Rekonsiliasi hanya boleh mengantrekan ulang lead yang benar-benar lolos
+      // gate Publish. Dulu syarat audit lebih longgar daripada gate, sehingga
+      // lead ditarik kembali ke publish_prospect setiap tick, gagal gate, lalu
+      // dikembalikan ke Klarifikasi tanpa pernah sempat diriset ulang.
+      reason =
+        "Klarifikasi belum menyatakan PIC, e-mail PIC, bukti nomor PIC, dan koordinat entitas valid.";
     } else if (
       row.job_stage === "paused" &&
       Number(row.job_attempts) >= 3 &&

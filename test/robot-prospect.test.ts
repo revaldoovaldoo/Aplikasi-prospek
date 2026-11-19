@@ -527,7 +527,7 @@ function fakeAuditDb(companies: Record<string, unknown>[], rows: Record<string, 
 test("Audit Telegram menjelaskan lead yang belum masuk Prospek", async () => {
   const rows = [
     { lead_id: "in", name: "Hotel A", contact_name: "Ani", phone: "081234567890", job_stage: "done" },
-    { lead_id: "eligible", name: "Hotel B", contact_name: "Budi", phone: "081234567891", job_stage: "done", city: "Jakarta", latitude: -6.2, longitude: 106.8, coordinate_source: "OpenStreetMap node" },
+    { lead_id: "eligible", name: "Hotel B", contact_name: "Budi Santoso", contact_role: "IT Manager", phone: "081234567891", email: "budi@hotelb.co.id", validation_status: "verified", validation_evidence: JSON.stringify(["Nomor PIC 081234567891 tercantum bersama PIC Budi Santoso pada https://hotelb.co.id/kontak."]), screening_status: "clear", job_stage: "done", city: "Jakarta", latitude: -6.2, longitude: 106.8, coordinate_source: "OpenStreetMap node" },
     { lead_id: "queued", name: "Hotel C", contact_name: "Cici", phone: "081234567892", job_stage: "publish_prospect", city: "Jakarta", latitude: -6.2, longitude: 106.8, coordinate_source: "OpenStreetMap node" },
     { lead_id: "no-pic", name: "Hotel D", contact_name: "", phone: "081234567893", job_stage: "paused" },
     { lead_id: "bad-phone", name: "Hotel E", contact_name: "Eka", phone: "", job_stage: "paused" },
@@ -615,7 +615,7 @@ test("Audit terbalik memisahkan Prospek lama dan antrean yang tidak sinkron", as
 
 test("Rekonsiliasi hanya memasukkan lead terkirim yang memenuhi syarat", async () => {
   const rows = [
-    { lead_id: "eligible", name: "Hotel B", contact_name: "Budi", phone: "081234567891", job_stage: "done", city: "Jakarta", latitude: -6.2, longitude: 106.8, coordinate_source: "OpenStreetMap node" },
+    { lead_id: "eligible", name: "Hotel B", contact_name: "Budi Santoso", contact_role: "IT Manager", phone: "081234567891", email: "budi@hotelb.co.id", validation_status: "verified", validation_evidence: JSON.stringify(["Nomor PIC 081234567891 tercantum bersama PIC Budi Santoso pada https://hotelb.co.id/kontak."]), screening_status: "clear", job_stage: "done", city: "Jakarta", latitude: -6.2, longitude: 106.8, coordinate_source: "OpenStreetMap node" },
     { lead_id: "no-pic", name: "Hotel D", contact_name: "", phone: "081234567893", job_stage: "paused" },
   ];
   const db = fakeAuditDb([], rows);
