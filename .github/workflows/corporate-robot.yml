@@ -1,6 +1,11 @@
 name: Corporate Robot 24/7
 # Auth memakai GitHub OIDC; tidak membutuhkan repository secret.
 # Setiap lead divalidasi website, e-mail PIC, telepon PIC, dan koordinat sebelum publish.
+#
+# Cron GitHub untuk repo ini terbukti hanya dipicu beberapa kali sehari, bukan
+# tiap 15 menit. Karena itu satu job sengaja dibuat berjalan lama (maksimal di
+# bawah batas 6 jam) dan memanggil robot berulang tiap beberapa menit, sehingga
+# Finding, Klarifikasi, dan Publish tetap bekerja sepanjang hari.
 
 on:
   schedule:
@@ -23,23 +28,46 @@ concurrency:
 jobs:
   tick:
     runs-on: ubuntu-latest
-    # Panel AI + geocoding bisa memakan beberapa menit. Beri waktu yang cukup
-    # agar permintaan cron tidak berhenti sebelum kurir Telegram dijalankan.
-    timeout-minutes: 8
+    # Batas job GitHub 6 jam; sisakan ruang agar job berhenti dengan rapi.
+    timeout-minutes: 350
     steps:
-      - name: Run one Corporate Robot batch
+      - name: Run Corporate Robot continuously
+        env:
+          ROBOT_URL: https://site-112732548e6d4039b0803f571aea6817.freebuff.page/api/corporate/robot/cron-oidc
+          # Setiap tick memproses maksimal 2 lead agar subrequest Cloudflare
+          # tidak jebol; antrean besar tetap habis karena tick sangat rapat.
+          ROBOT_LIMIT: "2"
+          TICK_PAUSE_SECONDS: "165"
+          RUN_SECONDS: "20400"
         run: |
-          set -euo pipefail
-          OIDC_RESPONSE=$(curl --silent --show-error --fail \
-            -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=hallo-pane-robot")
-          OIDC_TOKEN=$(printf '%s' "$OIDC_RESPONSE" | jq -r '.value')
-          if [ -z "$OIDC_TOKEN" ] || [ "$OIDC_TOKEN" = "null" ]; then
-            echo "GitHub tidak memberikan OIDC token."
-            exit 1
-          fi
-          curl --fail --silent --show-error --max-time 300 \
-            -X POST "https://site-112732548e6d4039b0803f571aea6817.freebuff.page/api/corporate/robot/cron-oidc" \
-            -H "Authorization: Bearer $OIDC_TOKEN" \
-            -H "Content-Type: application/json" \
-            --data '{"source":"github-oidc","limit":4}'
+          set -uo pipefail
+          deadline=$(( $(date +%s) + RUN_SECONDS ))
+          tick=0
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            tick=$(( tick + 1 ))
+            OIDC_RESPONSE=$(curl --silent --show-error --fail \
+              -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+              "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=hallo-pane-robot") || {
+              echo "tick ${tick}: gagal meminta OIDC token; ulang sebentar lagi"
+              sleep 20
+              continue
+            }
+            OIDC_TOKEN=$(printf '%s' "$OIDC_RESPONSE" | jq -r '.value')
+            if [ -z "$OIDC_TOKEN" ] || [ "$OIDC_TOKEN" = "null" ]; then
+              echo "tick ${tick}: GitHub tidak memberikan OIDC token"
+              sleep 20
+              continue
+            fi
+            if curl --fail --silent --show-error --max-time 240 \
+              -X POST "$ROBOT_URL" \
+              -H "Authorization: Bearer $OIDC_TOKEN" \
+              -H "Content-Type: application/json" \
+              --data "{\"source\":\"github-oidc\",\"limit\":${ROBOT_LIMIT}}" \
+              | tee /tmp/robot-tick.json; then
+              echo "tick ${tick} ok $(date -u +%H:%M:%SZ)"
+            else
+              echo "tick ${tick} gagal $(date -u +%H:%M:%SZ); robot akan dicoba lagi"
+            fi
+            sleep "$TICK_PAUSE_SECONDS"
+          done
+          echo "Selesai ${tick} tick; job berikutnya melanjutkan antrean."

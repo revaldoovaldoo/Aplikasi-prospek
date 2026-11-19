@@ -893,6 +893,13 @@ async function runRobotBatchAndEnsureWebhook(db, env, options) {
   }
 }
 
+/** Batas lead per tick dari scheduler; dijaga kecil agar subrequest aman. */
+function robotBatchLimit(body) {
+  const value = Number(body?.limit);
+  if (!Number.isFinite(value)) return 2;
+  return Math.max(1, Math.min(6, Math.floor(value)));
+}
+
 async function handleCorporateRobotCron(request, env) {
   if (request.method !== "POST") {
     return new Response(null, {
@@ -918,7 +925,7 @@ async function handleCorporateRobotCron(request, env) {
     await markCronTick(env.DB);
     await ensureCronOwner(env.DB);
     const result = await runRobotBatchAndEnsureWebhook(env.DB, env, {
-      limit: 1,
+      limit: robotBatchLimit(body),
       force: true,
       source: "cron",
     });
@@ -961,7 +968,7 @@ async function handleCorporateRobotCronOidc(request, env) {
     await markCronTick(env.DB);
     await ensureCronOwner(env.DB);
     const result = await runRobotBatchAndEnsureWebhook(env.DB, env, {
-      limit: 1,
+      limit: robotBatchLimit(body),
       force: true,
       source: "github-oidc",
     });
