@@ -51,6 +51,11 @@ const ROBOT_LOCK_MS = 10 * 60 * 1000;
 // rekonsiliasi Prospek) cukup sekali sejam. Tanpa ini setiap tick 15 menit
 // tetap menulis baris run dan meta meski tidak ada yang berubah.
 const ROBOT_MAINTENANCE_MS = 60 * 60 * 1000;
+// Jeda riset ulang setelah lead gagal gate. Dulu 2 jam, sehingga antrean
+// publish_prospect yang macet baru dicoba lagi berjam-jam kemudian. Sepuluh
+// menit cukup untuk menghindari tabrakan tick, tetapi gate tetap diperiksa
+// ulang sepenuhnya setiap percobaan.
+const RESEARCH_RETRY_MINUTES = 10;
 const ROBOT_SCHEMA_VERSION = "3";
 const DEFAULT_TELEGRAM_PHONE = "+6285156590261";
 const MAX_APP_STATE_CHARS = 1_500_000;
@@ -347,6 +352,10 @@ function nowIso() {
 
 function addDays(days) {
   return new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
+}
+
+function addMinutes(minutes) {
+  return new Date(Date.now() + minutes * 60 * 1000).toISOString();
 }
 
 function addHours(hours) {
@@ -2306,7 +2315,7 @@ async function advanceJob(db, row, env, settings, ownerId) {
         attempts,
         last_error:
           "Lead belum lolos validasi website, e-mail PIC, nomor PIC, dan koordinat. Sumber publik akan diperiksa lagi.",
-        next_run_at: exhausted ? addDays(1) : addHours(2),
+        next_run_at: exhausted ? addDays(1) : addMinutes(RESEARCH_RETRY_MINUTES),
       });
       return {
         found: false,
@@ -2331,7 +2340,7 @@ async function advanceJob(db, row, env, settings, ownerId) {
           attempts,
           last_error:
             "PIC, nomor PIC, atau koordinat entitas belum tervalidasi; lead dikembalikan ke Klarifikasi.",
-          next_run_at: exhausted ? addDays(1) : addHours(2),
+          next_run_at: exhausted ? addDays(1) : addMinutes(RESEARCH_RETRY_MINUTES),
         });
         return {
           found: false,
@@ -2380,7 +2389,7 @@ async function advanceJob(db, row, env, settings, ownerId) {
           last_error:
             telegram.error ||
             "Telegram selesai; nama PIC, nomor PIC, atau koordinat entitas belum lengkap.",
-          next_run_at: exhausted ? addDays(1) : addHours(2),
+          next_run_at: exhausted ? addDays(1) : addMinutes(RESEARCH_RETRY_MINUTES),
         });
         return {
           found: false,
@@ -2419,7 +2428,7 @@ async function advanceJob(db, row, env, settings, ownerId) {
           attempts,
           last_error:
             "PIC, nomor PIC, atau koordinat entitas belum tervalidasi; lead dikembalikan ke Klarifikasi.",
-          next_run_at: exhausted ? addDays(1) : addHours(2),
+          next_run_at: exhausted ? addDays(1) : addMinutes(RESEARCH_RETRY_MINUTES),
         });
         return {
           found: false,
@@ -2461,7 +2470,7 @@ async function advanceJob(db, row, env, settings, ownerId) {
           attempts,
           last_error:
             "Nama PIC, nomor PIC, atau koordinat entitas belum lengkap; lead dikembalikan ke Klarifikasi.",
-          next_run_at: exhausted ? addDays(1) : addHours(2),
+          next_run_at: exhausted ? addDays(1) : addMinutes(RESEARCH_RETRY_MINUTES),
         });
         return {
           found: false,
@@ -2485,7 +2494,7 @@ async function advanceJob(db, row, env, settings, ownerId) {
           attempts,
           telegram_sent_at: row.telegram_sent_at || "",
           last_error: prospect.reason || "Prospek gagal ditulis; akan dicoba lagi.",
-          next_run_at: exhausted ? addDays(1) : addHours(2),
+          next_run_at: exhausted ? addDays(1) : addMinutes(RESEARCH_RETRY_MINUTES),
         });
         return {
           found: false,
