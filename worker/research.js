@@ -772,6 +772,28 @@ async function fallbackLead(db, lead, env) {
  * Menjalankan panel AI lalu memvalidasi hasilnya secara deterministik.
  * Return shape kompatibel dengan endpoint pencarian kontak lama.
  */
+/**
+ * Status validasi lead dari hasil riset Klarifikasi.
+ *
+ * Sebelumnya `verified` hanya diberikan bila website resmi terbaca dan tidak
+ * ada satu pun pemeriksaan panel AI yang menolak. Akibatnya lead yang sudah
+ * pernah lolos gate (identitas PIC, nomor PIC terikat, e-mail PIC, koordinat
+ * entitas terbukti) turun jadi `partial` saat riset ulang, lalu macet di
+ * publish_prospect selamanya. Status kini mengikuti bukti identitas yang
+ * memang dipakai gate Publish; website dan opini panel AI tetap dicatat sebagai
+ * bukti, tetapi tidak membatalkan identitas yang sudah terbukti.
+ */
+export function validationStatusFor(flags = {}) {
+  const identityProven = Boolean(
+    flags.personVerified &&
+      flags.phoneVerified &&
+      flags.emailVerified &&
+      flags.locationVerified,
+  );
+  if (identityProven || flags.fullyVerified) return "verified";
+  return flags.hasAnyEvidence ? "partial" : "missing";
+}
+
 export async function researchCorporateLead(db, leadId, env = {}) {
   await ensureCorporateSchema(db);
   const row = await db
@@ -1118,7 +1140,14 @@ export async function researchCorporateLead(db, leadId, env = {}) {
   const hasAnyEvidence = Boolean(
     website || email || phone || personName || coordinate,
   );
-  const status = fullyVerified ? "verified" : hasAnyEvidence ? "partial" : "missing";
+  const status = validationStatusFor({
+    fullyVerified,
+    personVerified,
+    phoneVerified,
+    emailVerified,
+    locationVerified,
+    hasAnyEvidence,
+  });
   // Status kontak sengaja dipisah dari kelengkapan e-mail/website. Untuk
   // Publish, yang wajib adalah PIC + nomor PIC + titik koordinat yang tervalidasi.
   const contactStatus =
